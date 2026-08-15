@@ -1,5 +1,4 @@
 if(COMMAND nuttx_add_library)
-  # common/modbus_task/CMakeLists.txt
   nuttx_add_library(modbus_task STATIC modbus_task.c)
   
   target_include_directories(modbus_task PUBLIC

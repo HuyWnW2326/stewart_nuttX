@@ -1,8 +1,7 @@
 /****************************************************************************
  * common/pwm_capture_ioctl.h
  *
- * Shared ioctl API for the PWM input-capture char devices (/dev/pwmcap0..2).
- * Mirrors the convention already used by common/pwm_step_ioctl.h.
+ * Dinh nghia ioctl va ket qua do cho /dev/pwmcap0..2.
  ****************************************************************************/
 
 #ifndef __COMMON_PWM_CAPTURE_IOCTL_H

@@ -1,11 +1,12 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/stm32_sensorbtn.c
  *
- * (Khong doi gi so voi ban truoc, CHI THEM ham
- * motorlimit_timedwaitevent_id() o cuoi phan Public Functions, de
- * homing_task co the cho limit event CO TIMEOUT thay vi cho vo han -
- * can thiet de huy chu trinh homing giua chung khi EMERGENCY duoc
- * nhan.)
+ * Quan ly ngat, debounce va hang doi su kien cho sau limit switch va
+ * ba nut START/STOP, EMERGENCY, RESTART.
+ *
+ * Wiring: limit switch active-HIGH. START/STOP dung pull-up active-LOW,
+ * LOW la START va HIGH la STOP. EMERGENCY cung RESTART dung pull-up,
+ * nhan nut tao canh xuong va duoc ma hoa voi level 0.
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -62,8 +63,8 @@ static sem_t    g_btn_event_sem;
  * Name: limit_isr
  *
  * Description:
- *   Unchanged from previous version. ISR dung chung cho 6 chan limit
- *   switch. Goi stm32_steppulse_notify_limit() ngay khi biet trang thai
+ *   ISR dung chung cho 6 chan limit switch. Goi
+ *   stm32_steppulse_notify_limit() ngay khi biet trang thai
  *   moi, truoc khi dung ring buffer/sem_post.
  ****************************************************************************/
 
@@ -148,6 +149,7 @@ static int btn_startstop_isr(int irq, FAR void *context, FAR void *arg)
    */
 
 
+
   level_high = stm32_gpioread(GPIO_BTN_STARTSTOP);
 
   syslog(LOG_INFO, "[BTN_STARTSTOP ISR] level=%d", level_high);
@@ -187,6 +189,9 @@ static int btn_momentary_isr(int irq, FAR void *context, FAR void *arg)
 
   g_btn_last_tick[btn_id] = now;
 
+  syslog(LOG_INFO, "[BTN_MOMENTARY ISR] btn_id=%d (%s)\n", btn_id,
+         btn_id == BTN_EMERGENCY ? "EMERGENCY" : "RESTART");
+
   code = (btn_id << 1) | 0;
 
   int next_head = (g_btn_head + 1) % BTN_QUEUE_SIZE;
@@ -199,6 +204,7 @@ static int btn_momentary_isr(int irq, FAR void *context, FAR void *arg)
 
   return OK;
 }
+
 
 /****************************************************************************
  * Public Functions
@@ -221,7 +227,7 @@ bool motorlimit_read_hw(int motor_id, bool is_up)
                                GPIO_MOTOR3_LIMIT_DOWN;
     }
 
-  return stm32_gpioread(gpio);  /* NPN+pullup: LOW = đang chạm */
+  return stm32_gpioread(gpio);  
 }
 
 int stm32_sensorbtn_initialize(void)

@@ -1,8 +1,8 @@
 /****************************************************************************
  * common/system_state/system_state.c
  *
- * Xem system_state.h de biet bang chuyen trang thai day du va nguyen
- * tac thiet ke (khong I/O ben trong lock).
+ * Quan ly trang thai van hanh va tien trinh homing. Module khong thuc
+ * hien I/O trong khi giu mutex; safety_task xu ly I/O sau khi mo lock.
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -61,10 +61,6 @@ static void system_state_reset_homing_locked(void)
   memset(g_state.homed,         false, sizeof(g_state.homed));
 }
 
-/****************************************************************************
- * Public Functions
- ****************************************************************************/
-
 void system_state_init(void)
 {
   pthread_mutex_init(&g_state.mutex, NULL);
@@ -86,6 +82,17 @@ sys_state_t system_state_get(void)
   return state;
 }
 
+/****************************************************************************
+ * Name: system_state_handle_btn_event
+ *
+ * Description:
+ *   Cap nhat state theo event nut bam trong mutex va tra ve action cho
+ *   safety_task thuc hien I/O sau khi mutex da duoc mo.
+ *
+ * Returned Value:
+ *   Action can thuc hien, hoac SYS_ACTION_NONE neu khong co side-effect.
+ ****************************************************************************/
+
 sys_action_t system_state_handle_btn_event(int btn_id, int level)
 {
   sys_action_t action = SYS_ACTION_NONE;
@@ -97,17 +104,9 @@ sys_action_t system_state_handle_btn_event(int btn_id, int level)
       case BTN_STARTSTOP:
         if (level == SYS_LEVEL_START)
           {
-            if (g_state.state == SYS_STATE_IDLE)
+            if (g_state.state == SYS_STATE_WAIT_START)
               {
-                /* Lan START dau tien: bat dau homing */
-
-                system_state_reset_homing_locked();
-                system_state_set_locked(SYS_STATE_HOMING);
-                action = SYS_ACTION_SPAWN_HOMING;
-              }
-            else if (g_state.state == SYS_STATE_WAIT_START)
-              {
-                /* Lan START thu 2: homing da xong, bat dau can bang */
+                /* Lan START (sau khi homing xong): bat dau can bang */
 
                 system_state_set_locked(SYS_STATE_RUNNING);
               }
@@ -118,29 +117,25 @@ sys_action_t system_state_handle_btn_event(int btn_id, int level)
                 system_state_set_locked(SYS_STATE_RUNNING);
               }
 
-            /* Cac state khac (HOMING, RUNNING, ESTOP, FAULT): bo qua */
+            /* Cac state khac (IDLE, HOMING, RUNNING, ESTOP, FAULT): bo qua.
+            * IDLE khong con phan ung voi START nua - phai RESTART truoc
+            * de bat dau homing.
+            */
           }
         else /* SYS_LEVEL_STOP */
           {
             if (g_state.state == SYS_STATE_RUNNING)
               {
                 system_state_set_locked(SYS_STATE_STOPPED);
+                action = SYS_ACTION_HARD_STOP;
               }
-
-            /* STOP KHONG co tac dung khi dang HOMING (yeu cau rieng)
-             * va cac state khac cung bo qua.
-             */
           }
         break;
 
       case BTN_EMERGENCY:
-        /* IDLE: khong co gi dang chay de can dung khan cap - bo qua,
-         * o lai IDLE, van cho START binh thuong. Da o ESTOP/FAULT thi
-         * cung khong can lam gi them.
-         */
+        /* Da o ESTOP/FAULT thi khong can hard-stop them lan nua. */
 
-        if (g_state.state != SYS_STATE_IDLE &&
-            g_state.state != SYS_STATE_ESTOP &&
+        if (g_state.state != SYS_STATE_ESTOP &&
             g_state.state != SYS_STATE_FAULT)
           {
             system_state_set_locked(SYS_STATE_ESTOP);
@@ -149,18 +144,19 @@ sys_action_t system_state_handle_btn_event(int btn_id, int level)
         break;
 
       case BTN_RESTART:
-        /* Chi hop le khi dang o 1 trong 3 trang thai "dung yen":
-         * STOPPED (da STOP), ESTOP hoac FAULT (da hard-stop). Bi bo
-         * qua khi dang RUNNING/HOMING/WAIT_START/IDLE.
-         */
+        /* Hop le khi dang o IDLE (vua cap nguon, chua homing lan nao), hoac
+        * o 1 trong 3 trang thai "dung yen": STOPPED, ESTOP, FAULT. Bi bo
+        * qua khi dang RUNNING/HOMING/WAIT_START.
+        */
 
-        if (g_state.state == SYS_STATE_STOPPED ||
+        if (g_state.state == SYS_STATE_IDLE    ||
+            g_state.state == SYS_STATE_STOPPED ||
             g_state.state == SYS_STATE_ESTOP   ||
             g_state.state == SYS_STATE_FAULT)
           {
-            /* Reset toan bo ve nhu luc moi cap nguon, roi tu dong
-             * home lai ngay - KHONG can doi them 1 lan START nua.
-             */
+            /* Reset toan bo ve nhu luc moi cap nguon, roi tu dong home lai
+            * ngay - bao gom ca truong hop dau tien sau khi cap nguon.
+            */
 
             system_state_reset_homing_locked();
             system_state_set_locked(SYS_STATE_HOMING);

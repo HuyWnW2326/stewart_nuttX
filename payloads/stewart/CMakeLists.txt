@@ -7,6 +7,13 @@ if(EXISTS ${NUTTX_APPS_BINDIR}/Kconfig)
       ${REPO_ROOT}/common
       ${REPO_ROOT}/boards/stm32f411e-disco/src
   )
-  target_link_libraries(apps_stewart_payload PRIVATE motor_pos modbus_task system_state homing_task)
+  target_link_libraries(apps_stewart_payload PRIVATE
+    motor_pos
+    modbus_task
+    system_state
+    homing_task
+    safety_task
+    motion_task
+  )
 
 endif()

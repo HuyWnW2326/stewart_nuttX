@@ -1,15 +1,9 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/stm32_pwmcapture.c
  *
- * Reads 3 PWM channels sent by PX4 (MicroAir) on TIM1 CH1/CH2/CH3
- * (PA8/PA9/PA10). Uses plain Input Capture Mode (not STM32's dedicated
- * "PWM Input Mode", which only measures one signal per timer) with
- * polarity toggled in the ISR to catch rising and falling edges on the
- * same channel — this is the approach already confirmed for this project.
- *
- * Exposes /dev/pwmcap0, /dev/pwmcap1, /dev/pwmcap2 as ioctl-only char
- * devices, following the same pattern as stm32_steppulse.c's
- * /dev/step0..2.
+ * Do ba kenh PWM tu PX4 bang TIM1 Input Capture va cung cap ket qua qua
+ * /dev/pwmcap0..2. Input Capture thuong duoc dung thay cho PWM Input Mode
+ * vi PWM Input Mode chi do duoc mot tin hieu tren moi timer.
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -40,7 +34,7 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Pin assignment: TIM1_CH1/CH2/CH3 on PA8/PA9/PA10 (AF1).
+/* Pin assignment: TIM1_CH1/CH2/CH3 on PA8/PE11/PA10 (AF1).
  * GPIO_TIM1_CH1IN/CH2IN/CH3IN and STM32_APB2_TIM1_CLKIN are defined in
  * boards/stm32f411e-disco/include/board.h (next to the TIM3 pulse-output
  * block), not here — keep board wiring/clocking centralized in board.h.
@@ -97,8 +91,9 @@ struct pwmcap_dev_s
 
 static struct pwmcap_chan_s g_pwmcap_chan[PWMCAP_NCHANNELS] =
 {
-  /* CH1: CCMR1 bits [1:0]=CCxS, [3:2]=ICxF low bits ... ; CCER bit0=CC1E,
-   * bit1=CC1P; DIER bit1=CC1IE; SR bit1=CC1IF
+  /* index 0 = /dev/pwmcap0 = PA8 = TIM1 CH1
+   * CCMR1 bits [1:0]=CCxS, [3:2]=ICxF low bits; CCER bit0=CC1E, bit1=CC1P;
+   * DIER bit1=CC1IE; SR bit1=CC1IF
    */
   {
     .ccr_offset      = STM32_GTIM_CCR1_OFFSET,
@@ -109,20 +104,8 @@ static struct pwmcap_chan_s g_pwmcap_chan[PWMCAP_NCHANNELS] =
     .dier_ccxie_bit  = 1,
     .sr_ccxif_bit    = 1,
   },
-  /* CH2: CCMR1 bits [9:8]=CCxS; CCER bit4=CC2E, bit5=CC2P; DIER bit2;
-   * SR bit2
-   */
-  {
-    .ccr_offset      = STM32_GTIM_CCR2_OFFSET,
-    .ccmr_shift       = 8,
-    .use_ccmr2       = false,
-    .ccer_ccxe_shift = 4,
-    .ccer_ccxp_shift = 5,
-    .dier_ccxie_bit  = 2,
-    .sr_ccxif_bit    = 2,
-  },
-  /* CH3: CCMR2 bits [1:0]=CCxS; CCER bit8=CC3E, bit9=CC3P; DIER bit3;
-   * SR bit3
+  /* index 1 = /dev/pwmcap1 = PA10 = TIM1 CH3
+   * CCMR2 bits [1:0]=CCxS; CCER bit8=CC3E, bit9=CC3P; DIER bit3; SR bit3
    */
   {
     .ccr_offset      = STM32_GTIM_CCR3_OFFSET,
@@ -132,6 +115,18 @@ static struct pwmcap_chan_s g_pwmcap_chan[PWMCAP_NCHANNELS] =
     .ccer_ccxp_shift = 9,
     .dier_ccxie_bit  = 3,
     .sr_ccxif_bit    = 3,
+  },
+  /* index 2 = /dev/pwmcap2 = PE11 = TIM1 CH2
+   * CCMR1 bits [9:8]=CCxS; CCER bit4=CC2E, bit5=CC2P; DIER bit2; SR bit2
+   */
+  {
+    .ccr_offset      = STM32_GTIM_CCR2_OFFSET,
+    .ccmr_shift      = 8,
+    .use_ccmr2       = false,
+    .ccer_ccxe_shift = 4,
+    .ccer_ccxp_shift = 5,
+    .dier_ccxie_bit  = 2,
+    .sr_ccxif_bit    = 2,
   },
 };
 
@@ -234,7 +229,16 @@ static int pwmcap_ioctl(FAR struct file *filep, int cmd, unsigned long arg)
     }
 }
 
-/* Shared handler for TIM1 capture/compare interrupt (covers CH1/2/3) */
+/****************************************************************************
+ * Name: pwmcap_interrupt
+ *
+ * Description:
+ *   Xu ly ngat capture chung cua TIM1. Moi kenh luan phien bat canh len
+ *   va canh xuong de tinh chu ky cung do rong xung doc lap.
+ *
+ * Returned Value:
+ *   Luon tra ve OK.
+ ****************************************************************************/
 
 static int pwmcap_interrupt(int irq, FAR void *context, FAR void *arg)
 {
@@ -302,10 +306,11 @@ static int pwmcap_interrupt(int irq, FAR void *context, FAR void *arg)
 /****************************************************************************
  * Name: stm32_pwmcapture_initialize
  *
- * Configures TIM1 CH1/CH2/CH3 (PA8/PA9/PA10) as PWM input-capture
- * channels and registers /dev/pwmcap0, /dev/pwmcap1, /dev/pwmcap2.
- * Call once from stm32_bringup.c, alongside stm32_steppulse_initialize()
- * and stm32_sensorbtn_initialize().
+ * Description:
+ *   Cau hinh ba kenh TIM1 Input Capture va dang ky /dev/pwmcap0..2.
+ *
+ * Returned Value:
+ *   OK khi thanh cong; ma loi am neu gan IRQ hoac dang ky driver that bai.
  ****************************************************************************/
 
 int stm32_pwmcapture_initialize(void)
@@ -316,15 +321,9 @@ int stm32_pwmcapture_initialize(void)
   int ret;
   int i;
 
-  /* 1. Configure GPIOs as TIM1 alternate function inputs (pin macros
-   *    come from board.h)
-   */
-
   stm32_configgpio(GPIO_TIM1_CH1IN);
   stm32_configgpio(GPIO_TIM1_CH2IN);
   stm32_configgpio(GPIO_TIM1_CH3IN);
-
-  /* 2. Enable TIM1 clock */
 
   modifyreg32(STM32_RCC_APB2ENR, 0, RCC_APB2ENR_TIM1EN);
 
@@ -384,11 +383,7 @@ int stm32_pwmcapture_initialize(void)
 
   up_enable_irq(STM32_IRQ_TIM1CC);
 
-  /* 8. Start the counter */
-
   pwmcap_modreg(STM32_GTIM_CR1_OFFSET, 0, GTIM_CR1_CEN);
-
-  /* 9. Register the 3 char devices */
 
   ret = register_driver("/dev/pwmcap0", &g_pwmcap_fops, 0666, &g_dev0);
   if (ret < 0)

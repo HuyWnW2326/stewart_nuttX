@@ -1,6 +1,6 @@
 add_subdirectory(motor_pos)
 add_subdirectory(modbus_task)
 add_subdirectory(system_state)
-# add_subdirectory(motion_task)
+add_subdirectory(motion_task)
 add_subdirectory(homing_task)
 add_subdirectory(safety_task)

@@ -11,21 +11,26 @@
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <stdbool.h>
+#include <time.h>
 
 #include "motor_pos.h"
 #include "system_state.h"
 #include "homing_task.h"
 #include "safety_task/safety_task.h"
 #include "step_ioctl.h"
+#include "pwm_capture_ioctl.h"   /* PWMCAPIOC_GET, struct pwmcap_result_s */
+#include "motion_task.h"
+#include "modbus_task.h"
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
 #define TEST_GEAR_RATIO           100
-#define TEST_MOTOR_PPR            10000
+#define TEST_MOTOR_PPR            50000
 #define TEST_PULSES_PER_OUT_REV   (TEST_MOTOR_PPR * TEST_GEAR_RATIO) /* 1 vong truc ra = 1,000,000 xung */
 #define TEST_FREQ_HZ              500000
+#define TEST_PWM_PERIOD_NS   10000000L 
 
 /****************************************************************************
  * Private Functions
@@ -124,38 +129,116 @@ static int test_spin_one_rev(void)
   return OK;
 }
 
+
+/* Doc /dev/pwmcap0..2 lien tuc o 100Hz, in ra pulse_width_us/period_us/
+ * valid/stale cua ca 3 kenh. Dung clock_nanosleep absolute-wake giong
+ * pattern se dung trong motion_task sau nay - test luon co che nay.
+ * Chay vo han, Ctrl+C / power-cycle de dung (chi la code test).
+ */
+
+static int test_read_pwm(void)
+{
+  static const char * const devpath[3] =
+    {
+      "/dev/pwmcap0", "/dev/pwmcap1", "/dev/pwmcap2"
+    };
+
+  int             fd[3];
+  int             ret;
+  int             i;
+  struct timespec next;
+
+  for (i = 0; i < 3; i++)
+    {
+      fd[i] = open(devpath[i], O_RDWR);
+      if (fd[i] < 0)
+        {
+          printf("[TEST-PWM] mo %s that bai: %d\n", devpath[i], errno);
+
+          while (--i >= 0)
+            {
+              close(fd[i]);
+            }
+
+          return -errno;
+        }
+    }
+
+  printf("[TEST-PWM] bat dau doc PWM @ 100Hz tren ca 3 kenh\n");
+  fflush(stdout);
+
+  clock_gettime(CLOCK_MONOTONIC, &next);
+
+  for (; ; )
+    {
+      struct pwmcap_result_s res[3];
+
+      for (i = 0; i < 3; i++)
+        {
+          ret = ioctl(fd[i], PWMCAPIOC_GET, (unsigned long)&res[i]);
+          if (ret < 0)
+            {
+              printf("[TEST-PWM] PWMCAPIOC_GET fd[%d] that bai: %d\n",
+                     i, errno);
+              continue;
+            }
+        }
+
+      printf("[TEST-PWM] "
+             "ch0(pw=%lu us, T=%lu us, valid=%d, stale=%d) | "
+             "ch1(pw=%lu us, T=%lu us, valid=%d, stale=%d) | "
+             "ch2(pw=%lu us, T=%lu us, valid=%d, stale=%d)\n",
+             (unsigned long)res[0].pulse_width_us,
+             (unsigned long)res[0].period_us,
+             (int)res[0].valid, (int)res[0].stale,
+             (unsigned long)res[1].pulse_width_us,
+             (unsigned long)res[1].period_us,
+             (int)res[1].valid, (int)res[1].stale,
+             (unsigned long)res[2].pulse_width_us,
+             (unsigned long)res[2].period_us,
+             (int)res[2].valid, (int)res[2].stale);
+      fflush(stdout);
+
+      next.tv_nsec += TEST_PWM_PERIOD_NS;
+      if (next.tv_nsec >= 1000000000L)
+        {
+          next.tv_sec  += next.tv_nsec / 1000000000L;
+          next.tv_nsec  = next.tv_nsec % 1000000000L;
+        }
+
+      clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+    }
+
+  /* khong bao gio toi day - vong lap vo han */
+
+  for (i = 0; i < 3; i++)
+    {
+      close(fd[i]);
+    }
+
+  return OK;
+}
+
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
 
 int stewart_payload_main(int argc, FAR char *argv[])
 {
-  FAR char * const homing_argv[5] =
-  {
-    "homing_task",
-    argc > 1 ? argv[1] : "20.0",
-    argc > 2 ? argv[2] : "20.0",
-    argc > 3 ? argv[3] : "20.0",
-    NULL
-  };
-
   printf("[STEWART] khoi dong\n");
-  printf("[STEWART] goc nang: M0=%s M1=%s M2=%s do\n",
-         homing_argv[1], homing_argv[2], homing_argv[3]);
-  fflush(stdout);
 
-  /* 1. Khoi tao state truoc - homing_task se doc/ghi vao day */
-  // motor_pos_init();
-  // system_state_init();
+  motor_pos_init();
+  system_state_init();
 
-  // safety_task_initialize();
+  modbus_task_start();
+  safety_task_initialize();
 
-  /* Test: quay 1 vong truc ra @ 100kHz tren ca 3 dong co de kiem tra
-   * mat xung. Thay cho luong hoat dong binh thuong trong luc test.
-   */
 
-  test_spin_one_rev();
+  motion_task_start();          /* them dong nay */
 
+  // test_spin_one_rev();
+  
   for (;;)
     {
       usleep(1000000);

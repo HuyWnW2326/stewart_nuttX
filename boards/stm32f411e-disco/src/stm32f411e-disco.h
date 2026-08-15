@@ -187,6 +187,7 @@ int stm32_usbhost_initialize(void);
 #if defined(CONFIG_STM32_TIM3)
 int stm32_steppulse_initialize(void);
 int stm32_sensorbtn_initialize(void);
+int stm32_pwmcapture_initialize(void);
 #endif
 
 int stm32_bringup(void);

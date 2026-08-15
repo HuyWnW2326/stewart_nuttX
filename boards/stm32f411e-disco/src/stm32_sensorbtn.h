@@ -1,5 +1,7 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/stm32_sensorbtn.h
+ *
+ * Khai bao giao dien limit switch va nut dieu khien cua board.
  ****************************************************************************/
 
 #ifndef __BOARDS_ARM_STM32_STM32F411E_DISCO_SRC_STM32_SENSORBTN_H
@@ -45,10 +47,9 @@ void motorlimit_waitevent(void);
 int  motorlimit_timedwaitevent(FAR const struct timespec *abstime);
 void motorlimit_waitevent_id(FAR int *motor_id, FAR bool *is_up);
 
-/* Giong motorlimit_waitevent_id(), nhung co timeout (dung abstime kieu
- * CLOCK_REALTIME, giong sem_timedwait). Duoc them de ho tro
- * homing_task huy chu trinh homing giua chung khi EMERGENCY duoc nhan
- * (system_state chuyen sang ESTOP) ma khong bi treo vo han tren
+/* Giong motorlimit_waitevent_id(), nhung dung sem_timedwait() voi
+ * abstime CLOCK_REALTIME. Timeout cho phep homing_task thoat som khi
+ * EMERGENCY chuyen system_state sang ESTOP thay vi bi treo vo han tren
  * semaphore.
  *
  * Return OK va dien *motor_id va *is_up neu co event that su trong luc

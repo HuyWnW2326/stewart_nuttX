@@ -26,10 +26,24 @@
 
 #include <nuttx/config.h>
 #include <nuttx/debug.h>
+#include <nuttx/arch.h>
 #include <syslog.h>
 
 #include "stm32.h"
 #include "stm32f411e-disco.h"
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* them moi: cho phan cung (GPIO, pull-up cam bien, nguon...) on dinh
+ * truoc khi bat dau nhan ngat EXTI cho limit switch/nut bam. Neu
+ * enable ngat ngay luc dien ap chan GPIO chua settle hoac dang trong
+ * qua trinh cap nguon, EXTI co the bat 1 canh gia (spurious edge)
+ * ngay tai thoi diem cau hinh, du chan khong thuc su doi muc.
+ */
+
+#define SENSORBTN_INIT_DELAY_MS   10000
 
 /****************************************************************************
  * Public Functions
@@ -64,6 +78,15 @@ int stm32_bringup(void)
     }
 #endif
 
+  /* them moi: doi phan cung on dinh truoc khi bat dau cau hinh + bat
+   * ngat EXTI cho limit switch/nut bam (xem SENSORBTN_INIT_DELAY_MS
+   * o tren). stm32_sensorbtn_initialize() lam gop ca config GPIO va
+   * enable interrupt trong cung 1 lenh stm32_gpiosetevent(), nen delay
+   * dat truoc loi goi ham nay la du - khong can sua stm32_sensorbtn.c.
+   */
+
+  up_mdelay(SENSORBTN_INIT_DELAY_MS);
+
   /* Register EXTI interrupt handlers for the 6 motor limit switches
    * and 3 control buttons (start/stop/reset).
    */
@@ -73,7 +96,22 @@ int stm32_bringup(void)
     {
       syslog(LOG_ERR, "ERROR: stm32_sensorbtn_initialize() failed: %d\n",
              ret);
+      return ret;               /* <-- thêm return, trước đây thiếu */
     }
+
+#ifdef CONFIG_STM32_TIM1
+  /* Register PWM input-capture reader for PX4 setpoints
+   * (TIM1 CH1/CH2/CH3) -> /dev/pwmcap0, /dev/pwmcap1, /dev/pwmcap2
+   */
+
+  ret = stm32_pwmcapture_initialize();
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "ERROR: stm32_pwmcapture_initialize() failed: %d\n",
+             ret);
+      return ret;
+    }
+#endif
 
   return ret;
 }

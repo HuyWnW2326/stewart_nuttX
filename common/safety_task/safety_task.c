@@ -1,8 +1,8 @@
 /****************************************************************************
  * common/safety_task/safety_task.c
  *
- * Xem safety_task.h de biet vai tro cua file nay trong kien truc moi -
- * toan bo state/business-logic nam trong common/system_state/.
+ * Xu ly event nut bam, thuc thi hard-stop/homing va kiem tra gioi han
+ * chuyen dong cho cac task dieu khien.
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -31,6 +31,7 @@
 #define SAFETY_HOMING_TASK_NAME       "homing_task"
 #define SAFETY_HOMING_TASK_PRIORITY   100
 #define SAFETY_HOMING_TASK_STACKSIZE  2048
+#define SAFETY_TASK_PRIORITY          200
 
 /****************************************************************************
  * Private Data
@@ -42,10 +43,14 @@ static pthread_t g_safety_thread;
  * Private Functions
  ****************************************************************************/
 
-/* Hard-cut ca 3 motor qua STEPIOC_ESTOP. Best-effort: log nhung khong
+/****************************************************************************
+ * Name: safety_hard_stop_all
+ *
+ * Description:
+ *   Hard-cut ca 3 motor qua STEPIOC_ESTOP. Best-effort: log nhung khong
  * dung neu 1 device loi/khong mo duoc, muon "cham" duoc het cac truc
  * co the ngay ca khi 1 kenh dang gap van de.
- */
+ ****************************************************************************/
 
 static void safety_hard_stop_all(void)
 {
@@ -75,16 +80,15 @@ static void safety_hard_stop_all(void)
     }
 }
 
-/* Spawn homing_task khong tham so rieng -> homing_task_main() se tu
- * dung goc nang mac dinh cho ca 3 truc (xem homing_task.h).
+/****************************************************************************
+ * Name: safety_spawn_homing_task
  *
- * Luu y: khong co co che chong spawn-trung o day - theo dung bang
- * transition trong system_state.c thi SYS_ACTION_SPAWN_HOMING chi
+ * Description:
+ *   Tao homing_task khong co tham so rieng. Khong co guard chong spawn
+ *   trung o day; theo bang transition, SYS_ACTION_SPAWN_HOMING chi
  * duoc tra ve tu IDLE hoac STOPPED/ESTOP/FAULT (khong bao gio tu
- * chinh HOMING), nen ve mat logic khong the co 2 lan spawn chong
- * nhau tu duong nut bam. Neu sau nay co them nguon nao khac cung co
- * the trigger SYS_ACTION_SPAWN_HOMING thi can bo sung guard o day.
- */
+ * chinh HOMING), nen cac event nut khong tao hai task chong nhau.
+ ****************************************************************************/
 
 static void safety_spawn_homing_task(void)
 {
@@ -104,11 +108,15 @@ static void safety_spawn_homing_task(void)
     }
 }
 
-/* Thuc hien I/O side-effect tuong ung voi 1 sys_action_t. Luon duoc
+/****************************************************************************
+ * Name: safety_dispatch_action
+ *
+ * Description:
+ *   Thuc hien I/O side-effect tuong ung voi 1 sys_action_t. Luon duoc
  * goi NGOAI mutex lock cua system_state (system_state_handle_btn_event()
  * / system_state_handle_fault_event() da tra ve TRUOC khi ham nay
  * chay).
- */
+ ****************************************************************************/
 
 static void safety_dispatch_action(sys_action_t action)
 {
@@ -130,7 +138,10 @@ static void safety_dispatch_action(sys_action_t action)
 }
 
 /****************************************************************************
- * Public Functions
+ * Name: safety_task_main
+ *
+ * Description:
+ *   Cho event nut bam, cap nhat system_state va thuc thi action tra ve.
  ****************************************************************************/
 
 void *safety_task_main(void *arg)
@@ -171,6 +182,12 @@ int safety_task_initialize(void)
     }
 
   pthread_setname_np(g_safety_thread, "safety_task");
+
+  ret = pthread_setschedprio(g_safety_thread, SAFETY_TASK_PRIORITY);
+  if (ret != 0)
+    {
+      syslog(LOG_WARNING, "safety_task: setschedprio failed: %d\n", ret);
+    }
 
   return 0;
 }

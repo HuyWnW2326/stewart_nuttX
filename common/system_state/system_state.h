@@ -1,25 +1,9 @@
 /****************************************************************************
  * common/system_state/system_state.h
  *
- * Module dung chung (khong phai task) luu trang thai van hanh toan he
- * thong, GOP tu 2 state machine doc lap truoc day (system_state cu +
- * safety_task's state machine) thanh 1 nguon su that duy nhat.
- *
- * Nguyen tac thiet ke:
- *   - Module nay CHI la kho du lieu bi dong (mutex-protected data
- *     store) + logic transition THUAN (khong I/O, khong block lau).
- *     Nhieu task khac nhau (motion_task, homing_task, safety_task,
- *     tuong lai la reconciliation task) deu doc nhanh state o day, ke
- *     ca o 100Hz, nen KHONG duoc phep co bat ky loi goi I/O (ioctl,
- *     open, task_create...) ben trong khi dang giu mutex.
- *   - Task nao goi system_state_handle_btn_event() /
- *     system_state_handle_fault_event() se nhan ve 1 sys_action_t mo
- *     ta viec CAN lam tiep (spawn homing_task, hard-stop...) - viec
- *     thuc thi I/O do la trach nhiem cua caller (safety_task.c), luon
- *     thuc hien SAU KHI ham nay da return (ngoai lock).
- *
- * Thread-safe: moi ham deu tu giu mutex noi bo, caller khong can lock
- * them.
+ * Luu trang thai van hanh va tien trinh homing dung chung. Module chi
+ * cap nhat du lieu trong mutex, khong duoc lam I/O khi giu lock; moi I/O
+ * theo sys_action_t do safety_task thuc hien sau khi ham da tra ve.
  ****************************************************************************/
 
 #ifndef __COMMON_SYSTEM_STATE_H
@@ -42,17 +26,18 @@
 /* Trang thai tong the cua he thong.
  *
  * Luong binh thuong:
- *   IDLE --START--> HOMING --(homing xong)--> WAIT_START --START--> RUNNING
+ *   IDLE --RESTART--> HOMING --(homing xong)--> WAIT_START --START--> RUNNING
  *   RUNNING --STOP--> STOPPED --START--> RUNNING (resume, khong home lai)
  *   STOPPED --RESTART--> HOMING (reset toan bo, home lai tu dau)
  *
- * EMERGENCY: tu HOMING/WAIT_START/RUNNING/STOPPED -> ESTOP ngay. Rieng
- * o IDLE thi EMERGENCY KHONG co tac dung (khong co gi dang chay de can
- * dung khan cap, o lai IDLE, van cho START binh thuong).
+ * EMERGENCY: tu moi state tru ESTOP/FAULT se chuyen sang ESTOP va yeu
+ * cau hard-stop ngay.
  *
- * RESTART: chi hop le khi dang o STOPPED / ESTOP / FAULT -> HOMING
- * (reset toan bo ve nhu luc moi cap nguon, roi TU DONG chay homing
+ * RESTART: hop le tu IDLE (vua cap nguon), STOPPED, ESTOP, hoac FAULT
+ * -> HOMING (reset toan bo homing progress, roi TU DONG chay homing
  * ngay, khong can cho THEM 1 lan START nua truoc khi homing bat dau).
+ * Day la CACH DUY NHAT de bat dau homing - START KHONG con kich hoat
+ * homing tu IDLE nua.
  *
  * FAULT: hien tai CHUA co code path nao trigger - la state du tru cho
  * tuong lai (reconciliation task phat hien stall/lech vi tri, homing
@@ -62,7 +47,7 @@
 
 typedef enum
 {
-  SYS_STATE_IDLE = 0,    /* Vua cap nguon / chua lam gi, cho START lan dau */
+  SYS_STATE_IDLE = 0,    /* Vua cap nguon, cho RESTART de bat dau homing */
   SYS_STATE_HOMING,      /* Dang chay chu trinh homing (ca 3 truc ve
                            * limit duoi roi nang len vi tri home) */
   SYS_STATE_WAIT_START,  /* Homing xong, dung yen, cho START lan 2 de
@@ -142,8 +127,8 @@ void system_state_set_homed(uint8_t motor_id, bool homed);
 bool system_state_is_homed(uint8_t motor_id);
 bool system_state_all_homed(void);
 
-/* Reset limit_reached[]/homed[] ve false het. Da duoc goi tu BEN
- * TRONG system_state_handle_btn_event() moi khi bat dau 1 chu trinh
+/* Reset limit_reached[]/homed[] ve false het. Duoc goi tu ben trong
+ * system_state_handle_btn_event() moi khi bat dau mot chu trinh
  * homing moi (IDLE->HOMING hoac RESTART->HOMING); van de public de
  * homing_task hoac code khac co the goi truc tiep neu can.
  */

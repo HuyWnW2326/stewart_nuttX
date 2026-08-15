@@ -1,38 +1,10 @@
 /****************************************************************************
  * common/homing_task/homing_task.c
  *
- * Quy trinh homing 3 truc dong co:
- *
- *   Buoc 0 - Kiem tra trang thai limit GPIO ngay khi khoi dong.
- *            Neu motor da chạm LIMIT_DOWN truoc khi cap nguon (khong co
- *            falling edge -> khong co ISR -> khong co event), xu ly ngay
- *            ma khong can doi event.
- *
- *   Buoc 1 - Gui STEPIOC_HOME (dir_up=false) cho cac truc CHUA chạm.
- *            Motor tu chay xuong cham, ISR tu cat xung khi chạm.
- *
- *   Buoc 2 - Doi event LIMIT_DOWN (co timeout) cho dung so truc can
- *            doi. Khi du ca 3 truc da chạm limit thi sang buoc 3.
- *
- *   Buoc 3 - Gui STEPIOC_MOVE (dir_up=true, pulse tinh tu goc nang)
- *            dong thoi cho ca 3 truc. Poll STEPIOC_STATUS den khi ca 3
- *            xong.
- *
- *   Buoc 4 - Set homed[0..2]=true, thong bao system_state homing da
- *            hoan tat (chuyen HOMING -> WAIT_START). Task tu thoat,
- *            cho safety_task xu ly nut START lan 2.
- *
- * Edge case da xu ly:
- *   - 1 hoac nhieu truc da chạm limit truoc khi cap nguon.
- *   - Event LIMIT_UP den trong luc dang doi LIMIT_DOWN (bi bo qua).
- *   - Event LIMIT_DOWN trung lap cua cung 1 truc (chi xu ly lan dau).
- *   - EMERGENCY duoc nhan giua chung (system_state chuyen HOMING ->
- *     ESTOP): task tu phat hien qua homing_is_aborted(), THOAT SOM
- *     thay vi treo vo han o buoc 2, va KHONG danh dau homed[]=true /
- *     KHONG bao homing da hoan tat neu bi ngat giua chung o buoc 2
- *     hoac buoc 3. STEPIOC_ESTOP (goi tu safety_task khi EMERGENCY) da
- *     tu tat xung o tang driver, o day chi can task nay tu biet duong
- *     ma thoat, khong con viec gi phai lam them de dam bao an toan.
+ * Dua ba truc ve LIMIT_DOWN, chot moc encoder va nang len vi tri hoat
+ * dong ban dau. Task cho limit co timeout de nhan ra EMERGENCY; neu bi
+ * abort giua chung thi khong duoc dat homed=true, thong bao homing hoan
+ * tat hay goi cut_all_son(), vi STEPIOC_ESTOP da cat SON.
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -50,18 +22,25 @@
 #include "system_state.h"
 #include "step_ioctl.h"
 #include "stm32_sensorbtn.h"
+#include "motor_pos.h"
+#include "safety_task.h"
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
 #define HOMING_MOTOR_COUNT          MOTOR_COUNT
-#define HOMING_FREQ_HZ              50000UL   /* tan so xung khi homing */
-#define HOMING_LIFT_FREQ_HZ         50000UL   /* tan so xung khi nang len */
+#define HOMING_FREQ_HZ              100000UL   /* tan so xung khi homing */
+#define HOMING_LIFT_FREQ_HZ         100000UL   /* tan so xung khi nang len */
 
-#define HOMING_LIFT_DEFAULT_DEG     30.0f     /* goc nang mac dinh (do) */
 #define HOMING_GEAR_RATIO           100.0f
 #define HOMING_PPR                  10000.0f
+
+#define HOMING_ZERO_CAPTURE_DELAY_US   150000UL
+#define HOMING_ZERO_FRESH_MAX_AGE_MS   200UL
+#define HOMING_ZERO_FRESH_RETRY_COUNT  5
+#define HOMING_ZERO_FRESH_RETRY_US     50000UL
+
 
 /* Tinh so pulse tu goc (do):
  * pulses = (deg / 360) * GEAR_RATIO * PPR
@@ -82,16 +61,35 @@
 
 #define HOMING_ABORT_POLL_MS         200
 
+/* Goc hoat dong ban dau (do) - tinh TU MOC 0 DO (khong phai tu limit
+ * switch). Dung chung cho ca 3 truc. Sau khi homing xong, vi tri that
+ * cua truc = HOMING_ACTIVE_DEG do trong he toa do moi (0 do = limit
+ * down + margin cua tung truc, xem g_homing_margin_deg[] ben duoi).
+ */
+
+#define HOMING_ACTIVE_DEG            30.0f
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
 
- static const float g_homing_lift_deg[HOMING_MOTOR_COUNT] =
+/* Margin (do) tu limit_down den moc 0 do - RIENG cho tung truc, dung
+ * de calib phan cung (vi du sai so co khi giua cac truc khac nhau).
+ * Dung boi motor_pos_capture_zero() khi chot moc 0.
+ */
+
+static const float g_homing_margin_deg[HOMING_MOTOR_COUNT] =
 {
-  30.0f,   /* motor 0 */
-  30.0f,   /* motor 1 */
-  30.0f,   /* motor 2 */
+  15.0f,   /* motor 0 */
+  15.0f,   /* motor 1 */
+  16.0f,   /* motor 2 */
 };
+
+/* Goc that su can nang len TU LIMIT_DOWN (khong phai tu moc 0 do) de
+ * dua truc den dung vi tri hoat dong ban dau = margin[i] + HOMING_ACTIVE_DEG.
+ * Tinh trong homing_task_main() vi margin khac nhau tung truc, khong
+ * the dung mot gia tri chung cho ca ba truc.
+ */
 
 /****************************************************************************
  * Name: homing_is_aborted
@@ -156,6 +154,15 @@ static bool send_home(int motor_id)
   home.dir_up  = false;           /* xoay xuong tim LIMIT_DOWN */
   home.freq_hz = HOMING_FREQ_HZ;
 
+  if (!safety_is_motor_allowed(motor_id, SAFETY_DIR_DOWN))
+    {
+      printf("[HOMING] ERROR: safety khong cho phep STEPIOC_HOME "
+             "motor=%d\n", motor_id);
+      fflush(stdout);
+      close(fd);
+      return false;
+    }
+
   ret = ioctl(fd, STEPIOC_HOME, (unsigned long)&home);
   close(fd);
 
@@ -174,7 +181,7 @@ static bool send_home(int motor_id)
  * Name: send_lift
  *
  * Description:
- *   Gui STEPIOC_MOVE di len ~20 do cho 1 truc. Return true neu thanh cong.
+ *   Gui STEPIOC_MOVE nang mot truc theo so xung da tinh.
  ****************************************************************************/
 
 static bool send_lift(int motor_id, uint32_t pulses)
@@ -192,6 +199,17 @@ static bool send_lift(int motor_id, uint32_t pulses)
   move.dir_up  = true;
   move.pulses  = pulses;
   move.freq_hz = HOMING_LIFT_FREQ_HZ;
+
+  if (!safety_is_motor_allowed(motor_id,
+                               move.dir_up ? SAFETY_DIR_UP :
+                                             SAFETY_DIR_DOWN))
+    {
+      printf("[HOMING] ERROR: safety khong cho phep STEPIOC_MOVE "
+             "(lift) motor=%d\n", motor_id);
+      fflush(stdout);
+      close(fd);
+      return false;
+    }
 
   ret = ioctl(fd, STEPIOC_MOVE, (unsigned long)&move);
   close(fd);
@@ -288,7 +306,88 @@ static bool wait_all_lift_done(void)
 }
 
 /****************************************************************************
- * Public Functions
+ * Name: cut_all_son
+ *
+ * Description:
+ *   Cat chan SON ca 3 truc sau khi lift hoan tat BINH THUONG (dem du
+ *   so xung muc tieu qua slave timer). Trong truong hop nay khong co
+ *   limit switch nao bi cham, nen duong tu dong cat SON trong
+ *   stm32_steppulse_notify_limit() khong duoc kich hoat - phai cat
+ *   thu cong tai day bang STEPIOC_SON_OFF cho tung truc.
+ *
+ *   KHONG goi ham nay tren nhanh bi EMERGENCY/abort - nhanh do da di
+ *   qua STEPIOC_ESTOP (safety_task) cat SON ca 3 truc roi.
+ ****************************************************************************/
+
+static void cut_all_son(void)
+{
+  int i;
+  int fd;
+
+  for (i = 0; i < HOMING_MOTOR_COUNT; i++)
+    {
+      fd = open_step_dev(i);
+      if (fd < 0)
+        {
+          continue;
+        }
+
+      if (ioctl(fd, STEPIOC_SON_OFF, 0) < 0)
+        {
+          printf("[HOMING] ERROR: STEPIOC_SON_OFF that bai motor=%d "
+                 "(errno=%d)\n", i, errno);
+          fflush(stdout);
+        }
+
+      close(fd);
+    }
+}
+
+/****************************************************************************
+ * Name: wait_motor_pos_fresh_for_zero
+ *
+ * Description:
+ *   Sau khoang cho ban dau, kiem tra du lieu encoder da duoc Modbus cap
+ *   nhat gan day chua. Retry ngan de tang co hoi lay dung mau moi; neu van
+ *   stale thi caller van capture zero theo hanh vi cu.
+ ****************************************************************************/
+
+static bool wait_motor_pos_fresh_for_zero(int motor_id)
+{
+  int retry;
+
+  for (retry = 0; retry < HOMING_ZERO_FRESH_RETRY_COUNT; retry++)
+    {
+      if (motor_pos_is_fresh(motor_id, HOMING_ZERO_FRESH_MAX_AGE_MS))
+        {
+          return true;
+        }
+
+      if (retry + 1 < HOMING_ZERO_FRESH_RETRY_COUNT)
+        {
+          usleep(HOMING_ZERO_FRESH_RETRY_US);
+        }
+    }
+
+  printf("[HOMING] WARNING: motor=%d motor_pos van stale sau %d lan "
+         "kiem tra, van capture zero\n",
+         motor_id, HOMING_ZERO_FRESH_RETRY_COUNT);
+  fflush(stdout);
+  return false;
+}
+
+/****************************************************************************
+ * Name: homing_task_main
+ *
+ * Description:
+ *   Thuc hien chu trinh tim limit duoi, chot moc encoder, nang ba truc
+ *   den goc hoat dong va cap nhat system_state khi hoan tat.
+ *
+ * Input Parameters:
+ *   argc, argv - Khong su dung.
+ *
+ * Returned Value:
+ *   0 khi homing hoan tat; -1 neu bi abort.
  ****************************************************************************/
 
 int homing_task_main(int argc, char *argv[])
@@ -301,26 +400,28 @@ int homing_task_main(int argc, char *argv[])
   bool     limit_down;
 
   (void)argc;
-  (void)argv;   /* khong con dung argv nua, doc truc tiep tu g_homing_lift_deg */
+  (void)argv;
 
   for (i = 0; i < HOMING_MOTOR_COUNT; i++)
     {
-      lift_pulses[i] = HOMING_DEG_TO_PULSES(g_homing_lift_deg[i]);
+      /* Goc that su can nang TU LIMIT_DOWN = margin (den moc 0 do) +
+       * HOMING_ACTIVE_DEG (tu moc 0 do den vi tri hoat dong ban dau).
+       * Vi vay khong dung truc tiep HOMING_ACTIVE_DEG lam goc nang.
+       */
 
-      printf("[HOMING] motor=%d: goc nang=%.2f do -> %lu pulse\n",
-             i, (double)g_homing_lift_deg[i], (unsigned long)lift_pulses[i]);
+      float lift_deg_from_limit = g_homing_margin_deg[i] + HOMING_ACTIVE_DEG;
+
+      lift_pulses[i] = HOMING_DEG_TO_PULSES(lift_deg_from_limit);
+
+      printf("[HOMING] motor=%d: margin=%.2f do + active=%.2f do "
+             "= nang %.2f do tu limit -> %lu pulse\n",
+             i, (double)g_homing_margin_deg[i], (double)HOMING_ACTIVE_DEG,
+             (double)lift_deg_from_limit, (unsigned long)lift_pulses[i]);
       fflush(stdout);
     }
 
   printf("[HOMING] Bat dau homing ca 3 truc\n");
   fflush(stdout);
-
-  /* Khong con tu goi system_state_reset_homing()/set_phase() o day nua
-   * - system_state_handle_btn_event() (goi boi safety_task truoc khi
-   * spawn task nay) da tu reset homing progress va chuyen state sang
-   * SYS_STATE_HOMING roi, nen luc task nay bat dau chay, state da
-   * dung san.
-   */
 
   /*------------------------------------------------------------------------
    * Buoc 0: Kiem tra trang thai limit GPIO hien tai truoc khi gui lenh.
@@ -335,21 +436,24 @@ int homing_task_main(int argc, char *argv[])
 
       if (limit_down)
         {
-          /* Motor nay da chạm LIMIT_DOWN - khong co falling edge nao se
-           * den nua cho trang thai nay. Xu ly ngay nhu ISR da noi.
-           */
-
-          printf("[HOMING] motor=%d da chạm LIMIT_DOWN tu truoc (skip home)\n",
-                 i);
+          printf("[HOMING] motor=%d da chạm LIMIT_DOWN tu truoc (skip home)\n", i);
           fflush(stdout);
 
-          /* Khoa chieu xuong (giong ISR lam) de steppulse biet - can
-           * thiet vi khong co edge nao xay ra de ISR tu lam viec nay.
-           */
-
           stm32_steppulse_notify_limit(i, false, true);
-
           system_state_set_limit_reached(i, true);
+
+          /* Truc dung yen tu truoc khi cap nguon - van can cho de modbus_task
+          * co it nhat 1 vong doc moi truoc khi lay lam moc 0 do.
+          */
+          usleep(HOMING_ZERO_CAPTURE_DELAY_US);
+          wait_motor_pos_fresh_for_zero(i);
+
+          if (motor_pos_capture_zero(i, g_homing_margin_deg[i]) < 0)
+            {
+              printf("[HOMING] ERROR: motor=%d capture zero that bai "
+                    "(motor_pos chua co du lieu hop le)\n", i);
+              fflush(stdout);
+            }
         }
       else
         {
@@ -365,11 +469,17 @@ int homing_task_main(int argc, char *argv[])
 
   for (i = 0; i < HOMING_MOTOR_COUNT; i++)
     {
+      if (homing_is_aborted())
+        {
+          printf("[HOMING] Bi ngat khi dang gui STEPIOC_HOME - thoat\n");
+          fflush(stdout);
+          return -1;
+        }
+
       if (!system_state_is_limit_reached(i))
         {
           printf("[HOMING] motor=%d: gui STEPIOC_HOME\n", i);
           fflush(stdout);
-
           send_home(i);
         }
     }
@@ -436,6 +546,20 @@ int homing_task_main(int argc, char *argv[])
 
       system_state_set_limit_reached(motor_id, true);
       need_event_count--;
+
+
+      /* Cho modbus_task doc it nhat 1 vong moi kip vi tri sau khi truc dung,
+      * roi moi lay lam moc 0 do cho truc nay.
+      */
+      usleep(HOMING_ZERO_CAPTURE_DELAY_US);
+      wait_motor_pos_fresh_for_zero(motor_id);
+
+      if (motor_pos_capture_zero(motor_id, g_homing_margin_deg[motor_id]) < 0)
+        {
+          printf("[HOMING] ERROR: motor=%d capture zero that bai "
+                "(motor_pos chua co du lieu hop le)\n", motor_id);
+          fflush(stdout);
+        }
     }
 
   printf("[HOMING] Ca 3 truc da chạm LIMIT_DOWN - bat dau nang len\n");
@@ -447,10 +571,16 @@ int homing_task_main(int argc, char *argv[])
 
   for (i = 0; i < HOMING_MOTOR_COUNT; i++)
     {
-      printf("[HOMING] motor=%d: nang len %lu pulse\n",
-             i, (unsigned long)lift_pulses[i]);
-      fflush(stdout);
+      if (homing_is_aborted())
+        {
+          printf("[HOMING] Bi ngat khi dang gui STEPIOC_MOVE (lift) - thoat\n");
+          fflush(stdout);
+          return -1;
+        }
 
+      printf("[HOMING] motor=%d: nang len %lu pulse\n",
+            i, (unsigned long)lift_pulses[i]);
+      fflush(stdout);
       send_lift(i, lift_pulses[i]);
     }
 
@@ -465,6 +595,16 @@ int homing_task_main(int argc, char *argv[])
     }
 
   printf("[HOMING] Ca 3 truc da nang len xong - homing hoan tat\n");
+  fflush(stdout);
+
+  /* Lift dung binh thuong (khong cham limit switch) - duong tu dong
+   * cat SON trong stm32_steppulse_notify_limit() khong duoc kich
+   * hoat, phai chu dong cat tai day truoc khi bao homing hoan tat.
+   */
+
+  cut_all_son();
+
+  printf("[HOMING] Da cat SON ca 3 truc\n");
   fflush(stdout);
 
   /*------------------------------------------------------------------------

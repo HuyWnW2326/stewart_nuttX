@@ -1,23 +1,12 @@
 /****************************************************************************
  * common/safety_task/safety_task.h
  *
- * Task xu ly nut bam START/STOP/EMERGENCY/RESTART. KHONG con tu giu
- * state rieng - toan bo business logic/state machine da chuyen sang
- * common/system_state/ (xem system_state.h). File nay chi con:
- *
- *   - 1 thread block tren motorbtn_waitevent(), chuyen tiep event cho
- *     system_state_handle_btn_event(), roi thuc hien I/O side-effect
- *     tuong ung (spawn homing_task, hard-stop) NGOAI mutex lock cua
- *     system_state.
- *   - safety_is_motor_allowed(): ham motion_task/homing_task goi
- *     TRUOC moi lenh STEPIOC_MOVE/HOME de kiem tra co duoc phep di
- *     chuyen khong (ket hop ca system state va limit switch song).
- *   - safety_report_fault(): entry point cho task tuong lai (vi du
- *     reconciliation task) bao loi nghiem trong.
+ * Xu ly nut START/STOP/EMERGENCY/RESTART, thuc thi cac I/O an toan theo
+ * action cua system_state va kiem tra quyen chuyen dong theo limit switch.
  *
  * Luu y: limit switch da duoc hard-cut xung o tang ISR
  * (stm32_steppulse_notify_limit(), goi truc tiep tu stm32_sensorbtn.c)
- * - safety_task KHONG can tu goi STEPIOC_ESTOP khi co limit event,
+ * - safety_task khong can tu goi STEPIOC_ESTOP khi co limit event;
  * safety_is_motor_allowed() chi la lop kiem tra phan mem PHU.
  ****************************************************************************/
 

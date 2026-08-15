@@ -1,12 +1,9 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/stm32_steppulse.c
  *
- * Step/Direction pulse generator cho 3 truc AC servo, dung TIM3 lam
- * master phat xung PWM lien tuc, cascade qua Internal Trigger toi
- * cac slave timer (TIM2/TIM4/TIM5) de dem xung hoan toan bang phan
- * cung - CPU chi nhan 1 ngat/lan di chuyen thay vi hang tram nghin
- * ngat/giay. Ho tro doi target giua chung khong can doi lenh cu
- * hoan thanh, va khoa chieu theo tung limit switch rieng.
+ * Tao xung Step/Direction cho ba truc AC servo. TIM3 phat PWM, con
+ * TIM2/TIM4/TIM5 dem xung qua Internal Trigger va dung kenh tai target
+ * hoac khi limit switch cung chieu chuyen dong kich hoat.
  ****************************************************************************/
 #include "chip.h"
 #include "hardware/stm32_tim.h"
@@ -50,14 +47,18 @@
 #define STEP_SMCR_TS_ITR2       (2 << STEP_SMCR_TS_SHIFT)
 #define STEP_SMCR_TS_ITR3       (3 << STEP_SMCR_TS_SHIFT)
 
-/* TODO: xac nhan tu RM0383 bang "TIMx internal trigger connection"
- * xem TIM3 TRGO noi vao ITRx nao cua tung slave, roi thay dung gia
- * tri STEP_SMCR_TS_ITRx vao day.
+/* Anh xa ITR theo bang "TIMx internal trigger connection" trong RM0383:
+ * TIM2 ITR2 <- TIM3, TIM4 ITR2 <- TIM3, TIM5 ITR1 <- TIM3.
  */
-#define TIM3_ITR_ON_TIM2   STEP_SMCR_TS_ITR2   /* TODO verify */
-#define TIM3_ITR_ON_TIM4   STEP_SMCR_TS_ITR2   /* TODO verify */
-#define TIM3_ITR_ON_TIM5   STEP_SMCR_TS_ITR1   /* TODO verify */
+#define TIM3_ITR_ON_TIM2   STEP_SMCR_TS_ITR2   
+#define TIM3_ITR_ON_TIM4   STEP_SMCR_TS_ITR2   
+#define TIM3_ITR_ON_TIM5   STEP_SMCR_TS_ITR1   
 
+/* SON active-LOW: LOW = servo duoc phep chay (tuong duong "noi thang
+ * vao GND" truoc day), HIGH = cat. Doi thanh 0 neu driver cua ban
+ * active-HIGH.
+ */
+#define STEP_SON_ACTIVE_LOW   0
 
 /****************************************************************************
  * Private Types
@@ -75,6 +76,7 @@ struct step_channel_s
   FAR struct stm32_tim_dev_s *master;        /* luon la TIM3 */
   uint8_t   timer_channel;                    /* 1/2/3 tren TIM3 */
   uint32_t  dir_pin;
+  uint32_t  son_pin;
 
   uint32_t  slave_base;                       /* dia chi goc thanh ghi slave timer */
   bool      slave_is_16bit;                   /* true chi voi TIM4 */
@@ -82,6 +84,7 @@ struct step_channel_s
   volatile enum step_mode_e mode;
   volatile bool     busy;
   volatile bool     dir_up;
+  volatile bool     son_enabled;              /* trang thai SON hien tai */
   volatile uint32_t overflow_remaining;       /* chi dung khi slave_is_16bit */
   volatile uint32_t last_cycle_arr;     
 
@@ -106,6 +109,26 @@ static inline void step_slave_write_arr(FAR struct step_channel_s *ch, uint32_t 
   putreg32(v, ch->slave_base + STM32_GTIM_ARR_OFFSET);
 }
 
+/****************************************************************************
+ * Name: step_son_enable
+ *
+ * Description:
+ *   Bat/cat chan SON cua 1 truc. An toan goi tu ca task context lan
+ *   ISR context (chi 1 lan ghi thanh ghi GPIO ODR qua stm32_gpiowrite,
+ *   khong block).
+ ****************************************************************************/
+
+static inline void step_son_enable(FAR struct step_channel_s *ch, bool enable)
+{
+#if STEP_SON_ACTIVE_LOW
+  stm32_gpiowrite(ch->son_pin, !enable);
+#else
+  stm32_gpiowrite(ch->son_pin, enable);
+#endif
+
+  ch->son_enabled = enable;
+}
+
 static uint32_t tim3_ccxe_bit(uint8_t timer_channel)
 {
   switch (timer_channel)
@@ -118,8 +141,13 @@ static uint32_t tim3_ccxe_bit(uint8_t timer_channel)
 
 static void step_tim3_channel_enable(uint8_t timer_channel, bool enable)
 {
-  uint32_t bit = tim3_ccxe_bit(timer_channel);
-  uint32_t regval = getreg32(STM32_TIM3_CCER);
+  irqstate_t flags;
+  uint32_t   bit = tim3_ccxe_bit(timer_channel);
+  uint32_t   regval;
+
+  flags = enter_critical_section();
+
+  regval = getreg32(STM32_TIM3_CCER);
 
   if (enable)
     {
@@ -131,10 +159,22 @@ static void step_tim3_channel_enable(uint8_t timer_channel, bool enable)
     }
 
   putreg32(regval, STM32_TIM3_CCER);
+
+  leave_critical_section(flags);
 }
 
 /****************************************************************************
- * Private Functions - ISR cho tung slave timer (1 ngat / 1 lan di chuyen)
+ * Name: step_slave_isr_common
+ *
+ * Description:
+ *   Xu ly ngat Update cua slave timer. TIM4 16-bit co the can nhieu
+ *   chu ky tran truoc khi dat du so xung cua mot lenh.
+ *
+ * Input Parameters:
+ *   idx - Chi so truc co slave timer vua phat ngat.
+ *
+ * Returned Value:
+ *   Luon tra ve OK.
  ****************************************************************************/
 
 static int step_slave_isr_common(int idx)
@@ -192,7 +232,21 @@ static int step_tim5_isr(int irq, FAR void *context, FAR void *arg)
 }
 
 /****************************************************************************
- * Private Functions - ap dung lenh di chuyen (dung chung cho MOVE/HOME)
+ * Name: step_apply_move
+ *
+ * Description:
+ *   Cau hinh chieu, tan so va bo dem xung cho lenh MOVE hoac HOME. Lenh
+ *   bi tu choi neu yeu cau di tiep vao limit switch dang kich hoat.
+ *
+ * Input Parameters:
+ *   idx     - Chi so truc.
+ *   dir_up  - Huong chuyen dong.
+ *   pulses  - So xung cua MOVE; khong dung khi homing.
+ *   freq_hz - Tan so xung.
+ *   homing  - Chon che do HOME khong biet truoc so xung.
+ *
+ * Returned Value:
+ *   OK khi da bat dau chuyen dong; -EACCES neu bi khoa boi limit switch.
  ****************************************************************************/
 
 static int step_apply_move(int idx, bool dir_up, uint32_t pulses,
@@ -212,6 +266,13 @@ static int step_apply_move(int idx, bool dir_up, uint32_t pulses,
     }
 
   flags = enter_critical_section();
+
+  /* Lenh di chuyen theo chieu duoc phep bat lai SON truoc khi phat
+   * xung. Goi vo dieu kien moi lan va
+   * dam bao khong quen bat lai sau khi bi cat boi limit truoc do.
+   */
+
+  step_son_enable(ch, true);
 
   if (ch->busy && ch->dir_up != dir_up)
     {
@@ -352,8 +413,20 @@ static int step_ioctl(FAR struct file *filep, int cmd, unsigned long arg)
               step_tim3_channel_enable(g_step_ch[j].timer_channel, false);
               g_step_ch[j].busy = false;
               g_step_ch[j].mode = STEP_MODE_IDLE;
+
+              /* EMERGENCY phai cat ca SON, khong chi dung xung, de dong
+               * co het giu momen/nguon
+               * cong suat, dung dua vao viec chi ngung phat xung.
+               */
+              step_son_enable(&g_step_ch[j], false);
             }
 
+          return OK;
+        }
+      
+      case STEPIOC_SON_OFF:
+        {
+          step_son_enable(&g_step_ch[idx], false);
           return OK;
         }
 
@@ -373,7 +446,17 @@ static const struct file_operations g_step_fops =
 };
 
 /****************************************************************************
- * Public Functions
+ * Name: stm32_steppulse_notify_limit
+ *
+ * Description:
+ *   Cap nhat limit switch tu ISR cam bien. Neu switch cung chieu dang
+ *   chay kich hoat thi cat xung va SON ngay trong ISR, khong cho task
+ *   tiep tuc day motor vao gioi han.
+ *
+ * Input Parameters:
+ *   motor_id - Chi so truc.
+ *   is_up    - true cho limit tren, false cho limit duoi.
+ *   active   - Trang thai kich hoat cua switch.
  ****************************************************************************/
 
 void stm32_steppulse_notify_limit(int motor_id, bool is_up, bool active)
@@ -397,8 +480,22 @@ void stm32_steppulse_notify_limit(int motor_id, bool is_up, bool active)
       step_tim3_channel_enable(ch->timer_channel, false);
       ch->busy = false;
       ch->mode = STEP_MODE_IDLE;
+
+      /* Cat SON de motor khong con giu momen tai gioi han. */
+      step_son_enable(ch, false);
     }
 }
+
+/****************************************************************************
+ * Name: stm32_steppulse_initialize
+ *
+ * Description:
+ *   Khoi tao GPIO, cau hinh TIM3 master va TIM2/TIM4/TIM5 slave theo
+ *   External Clock Mode 1, sau do dang ky /dev/step0..2.
+ *
+ * Returned Value:
+ *   OK khi thanh cong; ma loi am neu khoi tao timer hoac driver that bai.
+ ****************************************************************************/
 
 int stm32_steppulse_initialize(void)
 {
@@ -417,6 +514,11 @@ int stm32_steppulse_initialize(void)
   stm32_configgpio(GPIO_MOTOR1_DIR);
   stm32_configgpio(GPIO_MOTOR2_DIR);
   stm32_configgpio(GPIO_MOTOR3_DIR);
+
+  /* Ba chan SON la output push-pull duoc dinh nghia trong board.h. */
+  stm32_configgpio(GPIO_MOTOR1_SON);
+  stm32_configgpio(GPIO_MOTOR2_SON);
+  stm32_configgpio(GPIO_MOTOR3_SON);
 
   tim3 = stm32_tim_init(3);
   tim2 = stm32_tim_init(2);
@@ -455,20 +557,32 @@ int stm32_steppulse_initialize(void)
   g_step_ch[0].master = tim3;
   g_step_ch[0].timer_channel = 1;
   g_step_ch[0].dir_pin = GPIO_MOTOR1_DIR;
+  g_step_ch[0].son_pin = GPIO_MOTOR1_SON;
   g_step_ch[0].slave_base = STM32_TIM2_BASE;
   g_step_ch[0].slave_is_16bit = false;
 
   g_step_ch[1].master = tim3;
   g_step_ch[1].timer_channel = 2;
   g_step_ch[1].dir_pin = GPIO_MOTOR2_DIR;
+  g_step_ch[1].son_pin = GPIO_MOTOR2_SON;
   g_step_ch[1].slave_base = STM32_TIM4_BASE;
   g_step_ch[1].slave_is_16bit = true;
 
   g_step_ch[2].master = tim3;
   g_step_ch[2].timer_channel = 3;
   g_step_ch[2].dir_pin = GPIO_MOTOR3_DIR;
+  g_step_ch[2].son_pin = GPIO_MOTOR3_SON;
   g_step_ch[2].slave_base = STM32_TIM5_BASE;
   g_step_ch[2].slave_is_16bit = false;
+
+  /* Mac dinh tat SON ca 3 truc khi boot (day la chu dich, khong phai
+   * bug). SON chi duoc bat lai khi co lenh MOVE/HOME hop le trong
+   * step_apply_move(), va bi tat ngay khi cham limit hoac ESTOP.
+   */
+  for (i = 0; i < NUM_STEP_CHANNELS; i++)
+    {
+      step_son_enable(&g_step_ch[i], false);
+    }
 
   /* TIM2 (kenh 0): SMS = External Clock Mode 1, TS = ITR cua TIM3 */
   putreg32((TIM3_ITR_ON_TIM2) | STEP_SMCR_SMS_EXTCLK1, STM32_TIM2_SMCR);

@@ -1,5 +1,7 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/step_ioctl.h
+ *
+ * Dinh nghia ioctl va du lieu dung cho driver Step/Direction.
  ****************************************************************************/
 #ifndef __BOARDS_STM32F411E_DISCO_SRC_STEP_IOCTL_H
 #define __BOARDS_STM32F411E_DISCO_SRC_STEP_IOCTL_H
@@ -8,10 +10,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define STEPIOC_MOVE   _STEPIOC(0)  /* arg: FAR struct step_move_s * */
-#define STEPIOC_HOME   _STEPIOC(1)  /* arg: FAR struct step_home_s *  */
-#define STEPIOC_STATUS _STEPIOC(2)  /* arg: FAR bool *                */
-#define STEPIOC_ESTOP  _STEPIOC(3)  /* arg: khong dung                */
+#define STEPIOC_MOVE    _STEPIOC(0)  /* arg: FAR struct step_move_s * */
+#define STEPIOC_HOME    _STEPIOC(1)  /* arg: FAR struct step_home_s *  */
+#define STEPIOC_STATUS  _STEPIOC(2)  /* arg: FAR bool *                */
+#define STEPIOC_ESTOP   _STEPIOC(3)  /* arg: khong dung                */
+#define STEPIOC_SON_OFF _STEPIOC(4)
 
 struct step_move_s
 {
