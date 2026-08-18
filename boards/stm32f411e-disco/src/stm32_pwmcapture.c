@@ -1,9 +1,12 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/stm32_pwmcapture.c
  *
- * Do ba kenh PWM tu PX4 bang TIM1 Input Capture va cung cap ket qua qua
- * /dev/pwmcap0..2. Input Capture thuong duoc dung thay cho PWM Input Mode
- * vi PWM Input Mode chi do duoc mot tin hieu tren moi timer.
+ * Measures three PWM channels from PX4 via TIM1 Input Capture and exports
+ * results through /dev/pwmcap0..2.
+ *
+ * Design note: Input Capture Mode (not PWM Input Mode) is used because
+ * PWM Input Mode can only measure one signal per timer, while we need
+ * three independent measurements on the same timer.
  ****************************************************************************/
 
 #include <nuttx/config.h>

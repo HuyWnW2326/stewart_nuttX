@@ -1,7 +1,7 @@
 /****************************************************************************
  * common/motion_task/motion_task.h
  *
- * Khai bao giao dien khoi dong task dieu khien chuyen dong.
+ * Interface for motion control task.
  ****************************************************************************/
 
 #ifndef __COMMON_MOTION_TASK_H

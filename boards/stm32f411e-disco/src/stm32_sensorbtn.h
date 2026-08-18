@@ -1,7 +1,7 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/stm32_sensorbtn.h
  *
- * Khai bao giao dien limit switch va nut dieu khien cua board.
+ * Interface declarations for limit switches and control buttons.
  ****************************************************************************/
 
 #ifndef __BOARDS_ARM_STM32_STM32F411E_DISCO_SRC_STM32_SENSORBTN_H

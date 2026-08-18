@@ -1,7 +1,10 @@
 /****************************************************************************
  * common/motor_pos/motor_pos.c
  *
- * Luu feedback encoder va tinh so xung can di tu moc zero da hieu chuan.
+ * Stores encoder feedback and converts angle setpoints to pulse counts
+ * relative to the zero reference (captured during homing).
+ *
+ * Conversion formula: pulses = angle_deg * gear_ratio * PPR / 360
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -12,6 +15,7 @@
 #include <string.h>
 #include <errno.h>
 #include <pthread.h>
+#include <semaphore.h>
 
 #include <nuttx/clock.h>
 
@@ -31,6 +35,7 @@ static pthread_mutex_t          g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t g_zero_pulse[MOTOR_POS_COUNT];
 static bool    g_zero_captured[MOTOR_POS_COUNT];
 
+static sem_t g_data_sem;
 
 /****************************************************************************
  * Name: motor_id_valid
@@ -56,7 +61,7 @@ static int32_t motor_pos_current_pulse(int32_t encode_value, int32_t turn,
                                         int32_t rev)
 {
   int32_t pos_cur = motor_pos_decode(encode_value, turn);
-  return (int32_t)((float)pos_cur / MOTOR_POS_ENCODER_RESOLUTION
+  return -(int32_t)((float)pos_cur / MOTOR_POS_ENCODER_RESOLUTION
                     * MOTOR_POS_PULSE + (float)rev * MOTOR_POS_PULSE);
 }
 
@@ -90,6 +95,27 @@ void motor_pos_init(void)
   memset(g_zero_pulse, 0, sizeof(g_zero_pulse));
   memset(g_zero_captured, 0, sizeof(g_zero_captured));
   pthread_mutex_unlock(&g_lock);
+
+  sem_init(&g_data_sem, 0, 0);
+}
+
+int motor_pos_wait_update(uint32_t timeout_ms)
+{
+  struct timespec ts;
+  int             ret;
+
+  clock_gettime(CLOCK_REALTIME, &ts);
+
+  ts.tv_sec  += timeout_ms / 1000;
+  ts.tv_nsec += (timeout_ms % 1000) * 1000000L;
+  if (ts.tv_nsec >= 1000000000L)
+    {
+      ts.tv_sec  += 1;
+      ts.tv_nsec -= 1000000000L;
+    }
+
+  ret = sem_timedwait(&g_data_sem, &ts);
+  return (ret == 0) ? OK : -errno;
 }
 
 void motor_pos_update(int motor_id, int32_t encode_value, int32_t turn,
@@ -109,6 +135,8 @@ void motor_pos_update(int motor_id, int32_t encode_value, int32_t turn,
   g_state[motor_id].last_update_tick = clock_systime_ticks();
 
   pthread_mutex_unlock(&g_lock);    
+
+  sem_post(&g_data_sem);
 }
 
 bool motor_pos_is_fresh(int motor_id, uint32_t max_age_ms)
@@ -243,7 +271,6 @@ int motor_pos_capture_zero(int motor_id, float margin_deg)
   int32_t encode_value;
   int32_t turn;
   int32_t rev;
-  int32_t pos_cur;
   int32_t margin_pulse;
   bool    valid;
 
@@ -259,15 +286,13 @@ int motor_pos_capture_zero(int motor_id, float margin_deg)
       return -EAGAIN;
     }
 
-  pos_cur = motor_pos_decode(encode_value, turn);
-
   margin_pulse = (int32_t)(margin_deg * MOTOR_POS_GEAR_RATIO
                             * MOTOR_POS_PULSE / 360.0f);
 
-  g_zero_pulse[motor_id] = (int32_t)((float)pos_cur
-                            / MOTOR_POS_ENCODER_RESOLUTION * MOTOR_POS_PULSE
-                            + (float)rev * MOTOR_POS_PULSE)
+  g_zero_pulse[motor_id] = motor_pos_current_pulse(encode_value, turn, rev)
                             + margin_pulse;
+  
+  // printf("[MOTOR_POS] Zero pulse of motor %d = %ld", motor_id, g_zero_pulse[motor_id]);
 
   g_zero_captured[motor_id] = true;
 

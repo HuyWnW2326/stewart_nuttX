@@ -1,7 +1,7 @@
 /****************************************************************************
  * common/homing_task/homing_task.h
  *
- * Khai bao entry point cua chu trinh homing ba truc.
+ * Entry point declaration for homing task.
  ****************************************************************************/
 
 #ifndef __COMMON_HOMING_TASK_H

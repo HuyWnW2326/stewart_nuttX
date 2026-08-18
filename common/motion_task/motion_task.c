@@ -1,8 +1,13 @@
 /****************************************************************************
  * common/motion_task/motion_task.c
  *
- * Chay vong dieu khien 100 Hz, doc setpoint PWM, tinh sai lech vi tri
- * va gui lenh STEPIOC_MOVE khi system_state cho phep.
+ * Runs a 100 Hz control loop: reads PWM setpoint, computes position error,
+ * and sends STEPIOC_MOVE commands when system_state permits.
+ *
+ * Design notes:
+ * - PWM range: 1000-2000 µs maps to 0-MOTION_ANGLE_MAX_DEG
+ * - Step frequency: 100 kHz (constant for all three motors; TIM3 is shared)
+ * - Only updates when motor_pos feedback is fresh (detects stalled Modbus)
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -32,11 +37,11 @@
 
 #define MOTION_MOTOR_COUNT       MOTOR_COUNT
 
-#define MOTION_PERIOD_NS         10000000L   /* 100Hz = 10ms */
+#define MOTION_PERIOD_NS         100000000L   /* 100Hz = 10ms */
 
 #define MOTION_PWM_MIN_US        1000.0f
 #define MOTION_PWM_MAX_US        2000.0f
-#define MOTION_ANGLE_MAX_DEG     90.0f       /* tam thoi - se cap nhat
+#define MOTION_ANGLE_MAX_DEG     60.0f       /* tam thoi - se cap nhat
                                                * sau khi do dac thuc te */
 
 /* Tan so xung khi RUNNING - dung 1 gia tri co dinh chung cho ca 3
@@ -44,7 +49,7 @@
  * dai toc do da chot cho du an (300-500kHz), chon 400kHz lam mac
  * dinh - doi lai o day neu can so khac.
  */
-#define MOTION_STEP_FREQ_HZ      100000UL
+#define MOTION_STEP_FREQ_HZ      200000UL
 
 #define MOTION_TASK_PRIORITY     150   /* duoi safety_task, tren modbus_task */
 #define MOTION_DEBUG_MOTOR_ID    1
@@ -122,8 +127,8 @@ static void motion_process_motor(int motor_id)
       return;
     }
 
-  // target_deg = motion_pwm_to_deg(pwm.pulse_width_us);
-  target_deg = 50;
+  target_deg = motion_pwm_to_deg(pwm.pulse_width_us);
+  // target_deg = 60;
 
   clock_t pos_tick = motor_pos_get_update_tick(motor_id);
 
@@ -138,18 +143,6 @@ static void motion_process_motor(int motor_id)
   if (ret < 0)
     {
       return;   /* motor_pos chua co du lieu (-EAGAIN) - bo qua chu ky nay */
-    }
-
-  if (motor_id == 0)
-    {
-      static int dbg_counter = 0;
-      if (++dbg_counter % 30 == 0)
-        {
-          printf("[MOTION dbg] motor=%d target=%.1f pulses=%ld dir=%s\n",
-                motor_id, (double)target_deg, (long)pulses,
-                (pulses > 0) ? "UP(sau_fix)" : "DOWN(sau_fix)");
-          fflush(stdout);
-        }
     }
 
   if (pulses == 0)
@@ -183,9 +176,9 @@ static void motion_process_motor(int motor_id)
 
 static FAR void *motion_task_main(FAR void *arg)
 {
-  char            devpath[16];
-  int             i;
-  struct timespec next;
+  char devpath[16];
+  int  i;
+  int  ret;
 
   (void)arg;
 
@@ -210,13 +203,22 @@ static FAR void *motion_task_main(FAR void *arg)
         }
     }
 
-  printf("[MOTION] motion_task bat dau, 100Hz\n");
+  printf("[MOTION] motion_task bat dau, dan theo chu ky doc modbus\n");
   fflush(stdout);
-
-  clock_gettime(CLOCK_MONOTONIC, &next);
 
   for (; ; )
     {
+      /* Cho den khi co du lieu vi tri moi tu modbus_task, timeout 200ms
+       * lam watchdog - neu modbus treo thi khong bi block vinh vien,
+       * quay lai vong lap va de safety_task/logic khac xu ly.
+       */
+      ret = motor_pos_wait_update(200);
+
+      if (ret != OK)
+        {
+          continue;   /* timeout, chua co du lieu moi */
+        }
+
       if (system_state_get() == SYS_STATE_RUNNING)
         {
           for (i = 0; i < MOTION_MOTOR_COUNT; i++)
@@ -224,15 +226,6 @@ static FAR void *motion_task_main(FAR void *arg)
               motion_process_motor(i);
             }
         }
-
-      next.tv_nsec += MOTION_PERIOD_NS;
-      if (next.tv_nsec >= 1000000000L)
-        {
-          next.tv_sec  += next.tv_nsec / 1000000000L;
-          next.tv_nsec  = next.tv_nsec % 1000000000L;
-        }
-
-      clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
     }
 
   return NULL;

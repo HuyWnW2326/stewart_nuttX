@@ -1,7 +1,7 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/step_ioctl.h
  *
- * Dinh nghia ioctl va du lieu dung cho driver Step/Direction.
+ * Ioctl commands and data structures for step/direction driver.
  ****************************************************************************/
 #ifndef __BOARDS_STM32F411E_DISCO_SRC_STEP_IOCTL_H
 #define __BOARDS_STM32F411E_DISCO_SRC_STEP_IOCTL_H

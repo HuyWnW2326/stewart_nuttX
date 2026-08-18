@@ -1,8 +1,17 @@
 /****************************************************************************
  * common/system_state/system_state.c
  *
- * Quan ly trang thai van hanh va tien trinh homing. Module khong thuc
- * hien I/O trong khi giu mutex; safety_task xu ly I/O sau khi mo lock.
+ * Manages operating state and homing progress.
+ *
+ * Design principle:
+ * - State machine logic is pure (no I/O) and protected by mutex
+ * - I/O operations (spawn homing, hard-stop) are deferred to caller
+ *   (safety_task executes them after releasing the lock)
+ * - This separation ensures no deadlock or long critical sections
+ *
+ * State transitions: IDLE --(RESTART)--> HOMING --(complete)--> WAIT_START
+ *                    WAIT_START --(START)--> RUNNING --(STOP)--> STOPPED
+ *                    EMERGENCY or FAULT can interrupt from any state
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -45,12 +54,28 @@ static struct
  * Hai ham duoi day PHAI duoc goi trong khi dang giu g_state.mutex.
  ****************************************************************************/
 
+static const char *system_state_name(sys_state_t s)
+{
+  switch (s)
+    {
+      case SYS_STATE_IDLE:       return "IDLE";
+      case SYS_STATE_HOMING:     return "HOMING";
+      case SYS_STATE_WAIT_START: return "WAIT_START";
+      case SYS_STATE_RUNNING:    return "RUNNING";
+      case SYS_STATE_STOPPED:    return "STOPPED";
+      case SYS_STATE_ESTOP:      return "ESTOP";
+      case SYS_STATE_FAULT:      return "FAULT";
+      default:                   return "UNKNOWN";
+    }
+}
+
 static void system_state_set_locked(sys_state_t new_state)
 {
   if (g_state.state != new_state)
     {
-      syslog(LOG_INFO, "system_state: %d -> %d\n",
-             (int)g_state.state, (int)new_state);
+      syslog(LOG_INFO, "system_state: %s -> %s\n",
+             system_state_name(g_state.state),
+             system_state_name(new_state));
       g_state.state = new_state;
     }
 }

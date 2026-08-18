@@ -1,7 +1,7 @@
 /****************************************************************************
  * common/modbus_task/modbus_task.h
  *
- * Khai bao giao dien khoi dong task doc vi tri qua Modbus.
+ * Interface for Modbus position feedback task.
  ****************************************************************************/
 #ifndef __COMMON_MODBUS_TASK_MODBUS_TASK_H
 #define __COMMON_MODBUS_TASK_MODBUS_TASK_H

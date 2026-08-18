@@ -1,10 +1,17 @@
 /****************************************************************************
  * common/homing_task/homing_task.c
  *
- * Dua ba truc ve LIMIT_DOWN, chot moc encoder va nang len vi tri hoat
- * dong ban dau. Task cho limit co timeout de nhan ra EMERGENCY; neu bi
- * abort giua chung thi khong duoc dat homed=true, thong bao homing hoan
- * tat hay goi cut_all_son(), vi STEPIOC_ESTOP da cat SON.
+ * Homes three axes to LIMIT_DOWN, captures encoder zero reference, then
+ * lifts each to initial working position. Task has timeout to detect
+ * EMERGENCY early. If aborted mid-sequence, does NOT set homed=true and
+ * does NOT call cut_all_son() (STEPIOC_ESTOP has already cut SON).
+ *
+ * Design notes:
+ * - Pulse count = (degrees / 360) * gear_ratio * PPR (see HOMING_DEG_TO_PULSES)
+ * - Margin (offset from limit to 0°) differs per axis; stored in g_homing_margin_deg[]
+ * - HOMING_ACTIVE_DEG is the height above 0° where motion control starts
+ * - Uses sem_timedwait() in motorlimit_timedwaitevent_id() so homing_task
+ *   can detect EMERGENCY timeout instead of blocking indefinitely
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -24,6 +31,13 @@
 #include "stm32_sensorbtn.h"
 #include "motor_pos.h"
 #include "safety_task.h"
+
+#ifdef HOMING_DEBUG_VERBOSE
+#define HOMING_DEBUG_LOG(...) \
+  do { printf(__VA_ARGS__); fflush(stdout); } while (0)
+#else
+#define HOMING_DEBUG_LOG(...) do { } while (0)
+#endif
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -413,11 +427,12 @@ int homing_task_main(int argc, char *argv[])
 
       lift_pulses[i] = HOMING_DEG_TO_PULSES(lift_deg_from_limit);
 
-      printf("[HOMING] motor=%d: margin=%.2f do + active=%.2f do "
-             "= nang %.2f do tu limit -> %lu pulse\n",
-             i, (double)g_homing_margin_deg[i], (double)HOMING_ACTIVE_DEG,
-             (double)lift_deg_from_limit, (unsigned long)lift_pulses[i]);
-      fflush(stdout);
+      HOMING_DEBUG_LOG("[HOMING] motor=%d: margin=%.2f do + active=%.2f do "
+                       "= nang %.2f do tu limit -> %lu pulse\n",
+                       i, (double)g_homing_margin_deg[i],
+                       (double)HOMING_ACTIVE_DEG,
+                       (double)lift_deg_from_limit,
+                       (unsigned long)lift_pulses[i]);
     }
 
   printf("[HOMING] Bat dau homing ca 3 truc\n");
@@ -436,9 +451,6 @@ int homing_task_main(int argc, char *argv[])
 
       if (limit_down)
         {
-          printf("[HOMING] motor=%d da chạm LIMIT_DOWN tu truoc (skip home)\n", i);
-          fflush(stdout);
-
           stm32_steppulse_notify_limit(i, false, true);
           system_state_set_limit_reached(i, true);
 
@@ -478,8 +490,7 @@ int homing_task_main(int argc, char *argv[])
 
       if (!system_state_is_limit_reached(i))
         {
-          printf("[HOMING] motor=%d: gui STEPIOC_HOME\n", i);
-          fflush(stdout);
+          HOMING_DEBUG_LOG("[HOMING] motor=%d: gui STEPIOC_HOME\n", i);
           send_home(i);
         }
     }
@@ -490,8 +501,7 @@ int homing_task_main(int argc, char *argv[])
    * Bo qua: event LIMIT_UP, event LIMIT_DOWN cua truc da xu ly roi.
    *------------------------------------------------------------------------*/
 
-  printf("[HOMING] Cho %d truc chạm LIMIT_DOWN...\n", need_event_count);
-  fflush(stdout);
+  HOMING_DEBUG_LOG("[HOMING] Cho %d truc chạm LIMIT_DOWN...\n", need_event_count);
 
   while (need_event_count > 0)
     {
@@ -540,10 +550,7 @@ int homing_task_main(int argc, char *argv[])
 
           continue;
         }
-
-      printf("[HOMING] motor=%d chạm LIMIT_DOWN\n", motor_id);
-      fflush(stdout);
-
+        
       system_state_set_limit_reached(motor_id, true);
       need_event_count--;
 
@@ -578,9 +585,8 @@ int homing_task_main(int argc, char *argv[])
           return -1;
         }
 
-      printf("[HOMING] motor=%d: nang len %lu pulse\n",
-            i, (unsigned long)lift_pulses[i]);
-      fflush(stdout);
+      HOMING_DEBUG_LOG("[HOMING] motor=%d: nang len %lu pulse\n",
+                       i, (unsigned long)lift_pulses[i]);
       send_lift(i, lift_pulses[i]);
     }
 
@@ -594,8 +600,8 @@ int homing_task_main(int argc, char *argv[])
       return -1;
     }
 
-  printf("[HOMING] Ca 3 truc da nang len xong - homing hoan tat\n");
-  fflush(stdout);
+  // printf("[HOMING] Ca 3 truc da nang len xong - homing hoan tat\n");
+  // fflush(stdout);
 
   /* Lift dung binh thuong (khong cham limit switch) - duong tu dong
    * cat SON trong stm32_steppulse_notify_limit() khong duoc kich
@@ -603,9 +609,6 @@ int homing_task_main(int argc, char *argv[])
    */
 
   cut_all_son();
-
-  printf("[HOMING] Da cat SON ca 3 truc\n");
-  fflush(stdout);
 
   /*------------------------------------------------------------------------
    * Buoc 4: Cap nhat system state, bao safety_task/system_state biet
@@ -619,7 +622,7 @@ int homing_task_main(int argc, char *argv[])
 
   system_state_notify_homing_complete();
 
-  printf("[HOMING] State -> WAIT_START. Cho nhan nut START lan 2.\n");
+  printf("[HOMING] State -> WAIT_START. Cho nhan nut START.\n");
   fflush(stdout);
 
   return 0;

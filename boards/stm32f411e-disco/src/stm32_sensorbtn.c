@@ -1,12 +1,13 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/stm32_sensorbtn.c
  *
- * Quan ly ngat, debounce va hang doi su kien cho sau limit switch va
- * ba nut START/STOP, EMERGENCY, RESTART.
+ * Interrupt handling, debouncing, and event queue for limit switches and
+ * three control buttons: START/STOP, EMERGENCY, RESTART.
  *
- * Wiring: limit switch active-HIGH. START/STOP dung pull-up active-LOW,
- * LOW la START va HIGH la STOP. EMERGENCY cung RESTART dung pull-up,
- * nhan nut tao canh xuong va duoc ma hoa voi level 0.
+ * Wiring convention:
+ * - Limit switches: active-HIGH (1 = limit reached)
+ * - START/STOP button: pull-up, active-LOW; LOW=START edge, HIGH=STOP edge
+ * - EMERGENCY / RESTART buttons: pull-up, active-LOW; falling-edge only
  ****************************************************************************/
 
 #include <nuttx/config.h>

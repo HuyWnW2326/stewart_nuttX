@@ -1,13 +1,12 @@
 /****************************************************************************
  * common/safety_task/safety_task.h
  *
- * Xu ly nut START/STOP/EMERGENCY/RESTART, thuc thi cac I/O an toan theo
- * action cua system_state va kiem tra quyen chuyen dong theo limit switch.
+ * State machine control and motor safety interface.
  *
- * Luu y: limit switch da duoc hard-cut xung o tang ISR
- * (stm32_steppulse_notify_limit(), goi truc tiep tu stm32_sensorbtn.c)
- * - safety_task khong can tu goi STEPIOC_ESTOP khi co limit event;
- * safety_is_motor_allowed() chi la lop kiem tra phan mem PHU.
+ * Design principle:
+ * - Limit switches are hard-cut at ISR level (stm32_steppulse_notify_limit)
+ * - safety_task handles state transitions and I/O side-effects
+ * - safety_is_motor_allowed() is a secondary software guard for motion tasks
  ****************************************************************************/
 
 #ifndef __COMMON_SAFETY_TASK_H

@@ -1,9 +1,18 @@
 /****************************************************************************
  * boards/arm/stm32/stm32f411e-disco/src/stm32_steppulse.c
  *
- * Tao xung Step/Direction cho ba truc AC servo. TIM3 phat PWM, con
- * TIM2/TIM4/TIM5 dem xung qua Internal Trigger va dung kenh tai target
- * hoac khi limit switch cung chieu chuyen dong kich hoat.
+ * Generates step/direction pulses for three AC servo motors. TIM3 serves
+ * as the master PWM clock; TIM2/TIM4/TIM5 act as slave counters
+ * (External Clock Mode 1) to count pulse edges and stop at target or
+ * when limit switches trigger.
+ *
+ * Design notes:
+ * - SON (enable pin) is assumed active-LOW. Change STEP_SON_ACTIVE_LOW to
+ *   0 if your driver is active-HIGH.
+ * - TIM3 TRGO (Update Event) cascades to slave ITR via master-slave mode:
+ *   RM0383 specifies TIM2/ITR2, TIM4/ITR2, TIM5/ITR1 <- all from TIM3.
+ * - External Clock Mode 1 means slaves count TRGO edges directly
+ *   (synchronous with TIM3 PWM output).
  ****************************************************************************/
 #include "chip.h"
 #include "hardware/stm32_tim.h"

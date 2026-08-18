@@ -1,8 +1,15 @@
 /****************************************************************************
  * common/safety_task/safety_task.c
  *
- * Xu ly event nut bam, thuc thi hard-stop/homing va kiem tra gioi han
- * chuyen dong cho cac task dieu khien.
+ * Handles button events (START/STOP/EMERGENCY/RESTART), executes state
+ * machine transitions, spawns homing task, and enforces motor safety rules.
+ *
+ * Design principle:
+ * - Limit switch hard-cuts pulses at ISR level
+ *   (stm32_steppulse_notify_limit() in board layer)
+ * - safety_task only executes I/O side-effects (hard-stop, spawn homing)
+ * - safety_is_motor_allowed() is a secondary software guard, not primary
+ *   (hardware has already cut SON if limit switch triggered)
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -212,6 +219,7 @@ bool safety_is_motor_allowed(int motor_id, int direction)
   if (state != SYS_STATE_RUNNING && state != SYS_STATE_HOMING)
     {
       return false;
+      printf("[SAFETY_TASK] NOT STATE RUNNING OR STATE HOMING");
     }
 
   /* Luu y: limit switch da hard-cut xung o tang ISR

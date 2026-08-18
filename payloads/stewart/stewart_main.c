@@ -235,7 +235,7 @@ int stewart_payload_main(int argc, FAR char *argv[])
   safety_task_initialize();
 
 
-  motion_task_start();          /* them dong nay */
+  motion_task_start();         
 
   // test_spin_one_rev();
   

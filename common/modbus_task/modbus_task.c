@@ -39,7 +39,7 @@
  * xMBMasterRunResTake). Khong dung -1 (cho vo han) - luon huu han
  * de phong truong hop bat thuong khong bao gio bi treo vinh vien.
  */
-#define MB_BUS_ACQUIRE_TIMEOUT_US   500000UL   /* 500ms */
+#define MB_BUS_ACQUIRE_TIMEOUT_US   100000UL   /* 100ms */
 
 #define MB_STACK_STARTUP_DELAY_US   20000UL
 
@@ -218,19 +218,7 @@ static void modbus_poll_one_slave(int motor_id)
                                         MB_BUS_ACQUIRE_TIMEOUT_US);
 
   if (error != MB_MRE_NO_ERR)
-  {
-    if (motor_id == MB_DEBUG_MOTOR_ID)
-      {
-        static int dbg_counter = 0;
-        if (++dbg_counter % 20 == 0)   /* giam tan suat in, tranh flood UART */
-          {
-            printf("[MB dbg] motor=%d reg31=%d reg32=%d reg35=%d -> motor_pos_update\n",
-                  motor_id, g_input_data.regs[0], g_input_data.regs[1],
-                  g_input_data.regs[4]);
-            fflush(stdout);
-          }
-      }
-      
+  {     
     printf("[MB] slave=%u loi/timeout, ma loi=%d\n",
             (unsigned int)slave_id, (int)error);
     fflush(stdout);
@@ -245,10 +233,10 @@ static void modbus_poll_one_slave(int motor_id)
       return;
     }
 
-  printf("[MB] slave=%u reg31=%d reg32=%d reg33=%d reg34=%d reg35=%d reg36=%d\n",
-         (unsigned int)slave_id,
-         g_input_data.regs[0], g_input_data.regs[1], g_input_data.regs[2], g_input_data.regs[3], g_input_data.regs[4], g_input_data.regs[5]);
-  fflush(stdout);
+  // printf("[MB] slave=%u reg31=%d reg32=%d reg33=%d reg34=%d reg35=%d reg36=%d\n",
+  //        (unsigned int)slave_id,
+  //        g_input_data.regs[0], g_input_data.regs[1], g_input_data.regs[2], g_input_data.regs[3], g_input_data.regs[4], g_input_data.regs[5]);
+  // fflush(stdout);
 
   motor_pos_update(motor_id,
                    (int32_t)g_input_data.regs[0],

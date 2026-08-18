@@ -1,9 +1,23 @@
 /****************************************************************************
  * common/system_state/system_state.h
  *
- * Luu trang thai van hanh va tien trinh homing dung chung. Module chi
- * cap nhat du lieu trong mutex, khong duoc lam I/O khi giu lock; moi I/O
- * theo sys_action_t do safety_task thuc hien sau khi ham da tra ve.
+ * State machine interface for operating modes and homing progress.
+ *
+ * Design principle:
+ * - State logic is protected by mutex; no I/O occurs while locked
+ * - Caller (safety_task) executes I/O side-effects after lock is released
+ * - Prevents deadlock and keeps critical sections short
+ *
+ * State diagram (normal flow):
+ *   IDLE --[RESTART]--> HOMING --(complete)--> WAIT_START --[START]--> RUNNING
+ *   RUNNING --[STOP]--> STOPPED (hard-stop: cut SON + stop pulses immediately)
+ *   STOPPED --[START]--> RUNNING (resume, NO rehoming)
+ *   STOPPED/ESTOP/FAULT --[RESTART]--> HOMING (reset and rehome from scratch)
+ *   Any state --[EMERGENCY]--> ESTOP (hard-stop + force rehome)
+ *
+ * Note: STOP and EMERGENCY both hard-stop motors (via STEPIOC_ESTOP);
+ *       difference is state transition: STOP->STOPPED (resume with START),
+ *       EMERGENCY->ESTOP (must RESTART to rehome)
  ****************************************************************************/
 
 #ifndef __COMMON_SYSTEM_STATE_H
@@ -67,7 +81,8 @@ typedef enum
 {
   SYS_ACTION_NONE = 0,      /* Khong can lam gi them */
   SYS_ACTION_SPAWN_HOMING,  /* Can task_create() homing_task_main() */
-  SYS_ACTION_HARD_STOP      /* Can goi STEPIOC_ESTOP tren ca 3 /dev/stepN */
+  SYS_ACTION_HARD_STOP      /* Call STEPIOC_ESTOP on all 3 /dev/stepN
+                              * (used by both STOP and EMERGENCY) */
 } sys_action_t;
 
 /****************************************************************************

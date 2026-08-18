@@ -1,7 +1,7 @@
 /****************************************************************************
- * common/motor_pos/motor_pos.h 
+ * common/motor_pos/motor_pos.h
  *
- * Luu feedback encoder va quy doi sai lech goc thanh so xung motor.
+ * Interface for storing encoder feedback and computing motor pulse counts.
  ****************************************************************************/
 #ifndef __COMMON_MOTOR_POS_MOTOR_POS_H
 #define __COMMON_MOTOR_POS_MOTOR_POS_H
@@ -14,7 +14,7 @@
 #define MOTOR_POS_GEAR_RATIO          100
 #define MOTOR_POS_PULSE               10000     /* pulse per revolution (PPR) */
 #define MOTOR_POS_ENCODER_RESOLUTION  131072     /* 2^17 - count/vong encoder */
-#define MOTOR_POS_ZERO_MARGIN_DEG   15.0f 
+#define MOTOR_POS_ZERO_MARGIN_DEG     15.0f 
 
 void motor_pos_init(void);
 
@@ -48,7 +48,11 @@ bool motor_pos_zero_captured(int motor_id);
 
 void motor_pos_update(int motor_id, int32_t encode_value, int32_t turn,
                        int32_t rev);
+                       
 clock_t motor_pos_get_update_tick(int motor_id);
+
+int motor_pos_wait_update(uint32_t timeout_ms);
+
 /****************************************************************************
  * Name: motor_pos_is_fresh
  *

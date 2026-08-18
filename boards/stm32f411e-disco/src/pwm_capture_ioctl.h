@@ -1,7 +1,7 @@
 /****************************************************************************
  * common/pwm_capture_ioctl.h
  *
- * Dinh nghia ioctl va ket qua do cho /dev/pwmcap0..2.
+ * Ioctl commands and result structure for PWM capture driver.
  ****************************************************************************/
 
 #ifndef __COMMON_PWM_CAPTURE_IOCTL_H
