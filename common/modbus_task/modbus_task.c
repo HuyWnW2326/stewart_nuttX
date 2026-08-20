@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
+#include <time.h>
 
 #include "modbus/mb.h"
 #include "modbus/mb_m.h"
@@ -43,7 +44,7 @@
 
 #define MB_STACK_STARTUP_DELAY_US   20000UL
 
-#define MB_POLLTHREAD_PRIORITY   80
+#define MB_POLLTHREAD_PRIORITY   100
 #define MB_REQTHREAD_PRIORITY    80
 
 #define MB_DEBUG_MOTOR_ID    1
@@ -71,6 +72,10 @@ static volatile bool    g_mb_reqthread_running;
 
 static volatile bool    g_input_callback_seen;
 static struct mb_input_data_s g_input_data;
+
+static struct timespec g_last_poll_ts;
+static bool             g_last_poll_valid;
+static int              g_last_poll_motor_id = -1;
 
 /* slave ID 1/2/3 tuong ung motor_id 0/1/2 (khop /dev/step0-2) */
 static const uint8_t g_slave_ids[MB_MOTOR_COUNT] = {1, 2, 3};
@@ -209,6 +214,24 @@ static void modbus_poll_one_slave(int motor_id)
 {
   uint8_t slave_id = g_slave_ids[motor_id];
   eMBMasterReqErrCode error;
+  struct timespec send_ts;
+  long delta_ms;
+
+  // clock_gettime(CLOCK_MONOTONIC, &send_ts);   /* moc thoi gian NGAY TRUOC khi gui request */
+
+  // if (g_last_poll_valid)
+  //   {
+  //     delta_ms = (send_ts.tv_sec  - g_last_poll_ts.tv_sec) * 1000 +
+  //                (send_ts.tv_nsec - g_last_poll_ts.tv_nsec) / 1000000;
+
+  //     printf("[MB] gui request motor=%d -> gui request motor=%d, cach nhau = %ld ms\n",
+  //            g_last_poll_motor_id, motor_id, delta_ms);
+  //     fflush(stdout);
+  //   }
+
+  g_last_poll_ts       = send_ts;
+  g_last_poll_motor_id = motor_id;
+  g_last_poll_valid    = true;
 
   g_input_callback_seen = false;
   g_input_data.valid = false;
@@ -218,12 +241,12 @@ static void modbus_poll_one_slave(int motor_id)
                                         MB_BUS_ACQUIRE_TIMEOUT_US);
 
   if (error != MB_MRE_NO_ERR)
-  {     
-    printf("[MB] slave=%u loi/timeout, ma loi=%d\n",
-            (unsigned int)slave_id, (int)error);
-    fflush(stdout);
-    return;
-  }
+    {
+      printf("[MB] slave=%u loi/timeout, ma loi=%d\n",
+             (unsigned int)slave_id, (int)error);
+      fflush(stdout);
+      return;
+    }
 
   if (!g_input_callback_seen || !g_input_data.valid)
     {
@@ -232,11 +255,6 @@ static void modbus_poll_one_slave(int motor_id)
       fflush(stdout);
       return;
     }
-
-  // printf("[MB] slave=%u reg31=%d reg32=%d reg33=%d reg34=%d reg35=%d reg36=%d\n",
-  //        (unsigned int)slave_id,
-  //        g_input_data.regs[0], g_input_data.regs[1], g_input_data.regs[2], g_input_data.regs[3], g_input_data.regs[4], g_input_data.regs[5]);
-  // fflush(stdout);
 
   motor_pos_update(motor_id,
                    (int32_t)g_input_data.regs[0],

@@ -35,6 +35,12 @@ static pthread_mutex_t          g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t g_zero_pulse[MOTOR_POS_COUNT];
 static bool    g_zero_captured[MOTOR_POS_COUNT];
 
+#define MOTOR_UPDATE_QUEUE_SIZE   (MOTION_MOTOR_COUNT * 2)
+#define MOTION_MOTOR_COUNT        3
+static int g_motor_update_queue[MOTOR_UPDATE_QUEUE_SIZE];
+static int g_motor_update_head = 0;
+static int g_motor_update_tail = 0;
+
 static sem_t g_data_sem;
 
 /****************************************************************************
@@ -118,6 +124,61 @@ int motor_pos_wait_update(uint32_t timeout_ms)
   return (ret == 0) ? OK : -errno;
 }
 
+/****************************************************************************
+ * Name: motor_pos_wait_update_id
+ *
+ * Description:
+ *   Giong motor_pos_wait_update(), nhung tra ve them dong co nao vua
+ *   duoc cap nhat (lay tu g_motor_update_queue), de caller chi xu ly
+ *   dung dong co do thay vi duyet ca MOTION_MOTOR_COUNT dong co.
+ *
+ * Returned Value:
+ *   OK va dien *motor_id neu co du lieu moi trong luc cho.
+ *   Ma loi am (vi du -ETIMEDOUT) neu het thoi gian cho - luc do
+ *   *motor_id KHONG duoc dong, khong nen doc.
+ ****************************************************************************/
+
+int motor_pos_wait_update_id(int timeout_ms, FAR int *motor_id)
+{
+  struct timespec abstime;
+  int ret;
+  int id;
+
+  clock_gettime(CLOCK_REALTIME, &abstime);
+  abstime.tv_sec  += timeout_ms / 1000;
+  abstime.tv_nsec += (timeout_ms % 1000) * 1000000L;
+  if (abstime.tv_nsec >= 1000000000L)
+    {
+      abstime.tv_sec++;
+      abstime.tv_nsec -= 1000000000L;
+    }
+
+  ret = sem_timedwait(&g_data_sem, &abstime);
+  if (ret < 0)
+    {
+      return -get_errno();
+    }
+
+  pthread_mutex_lock(&g_lock);
+
+  if (g_motor_update_tail == g_motor_update_head)
+    {
+      /* Phong thu: sem bao co du lieu nhung hang doi rong (khong nen
+       * xay ra vi moi lan sem_post deu di kem 1 lan day queue).
+       */
+      pthread_mutex_unlock(&g_lock);
+      return -EAGAIN;
+    }
+
+  id = g_motor_update_queue[g_motor_update_tail];
+  g_motor_update_tail = (g_motor_update_tail + 1) % MOTOR_UPDATE_QUEUE_SIZE;
+
+  pthread_mutex_unlock(&g_lock);
+
+  *motor_id = id;
+  return OK;
+}
+
 void motor_pos_update(int motor_id, int32_t encode_value, int32_t turn,
                        int32_t rev)
 {
@@ -125,6 +186,10 @@ void motor_pos_update(int motor_id, int32_t encode_value, int32_t turn,
     {
       return;
     }
+
+  printf("[MOTOR_POS] motor=%d encode_value=%ld turn=%ld rev=%ld\n",
+         motor_id, (long)encode_value, (long)turn, (long)rev);
+  fflush(stdout);
 
   pthread_mutex_lock(&g_lock);
 
@@ -134,7 +199,14 @@ void motor_pos_update(int motor_id, int32_t encode_value, int32_t turn,
   g_state[motor_id].valid            = true;
   g_state[motor_id].last_update_tick = clock_systime_ticks();
 
-  pthread_mutex_unlock(&g_lock);    
+  int next_head = (g_motor_update_head + 1) % MOTOR_UPDATE_QUEUE_SIZE;
+  if (next_head != g_motor_update_tail)
+    {
+      g_motor_update_queue[g_motor_update_head] = motor_id;
+      g_motor_update_head = next_head;
+    }
+
+  pthread_mutex_unlock(&g_lock);
 
   sem_post(&g_data_sem);
 }

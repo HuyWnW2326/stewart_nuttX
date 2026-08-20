@@ -23,6 +23,7 @@
 #include <sched.h>
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <math.h>
 
 #include "system_state.h"
 #include "step_ioctl.h"
@@ -46,13 +47,18 @@
 
 /* Tan so xung khi RUNNING - dung 1 gia tri co dinh chung cho ca 3
  * truc (TIM3 dung chung 1 period, xem stm32_steppulse.c). Theo dung
- * dai toc do da chot cho du an (300-500kHz), chon 400kHz lam mac
+ * dai toc do da chot cho du   (300-500kHz), chon 400kHz lam mac
  * dinh - doi lai o day neu can so khac.
  */
-#define MOTION_STEP_FREQ_HZ      200000UL
+
+#define MOTION_FREQ_MIN_HZ         1000UL
+#define MOTION_FREQ_MAX_HZ         50000UL
+#define MOTION_PULSES_FULL_SPEED   32000UL 
 
 #define MOTION_TASK_PRIORITY     150   /* duoi safety_task, tren modbus_task */
 #define MOTION_DEBUG_MOTOR_ID    1
+
+#define MOTION_DEADBAND_PULSES   1500   /* bat dau tu day, tang dan den khi het dao dong */
 
 /****************************************************************************
  * Private Data
@@ -62,6 +68,7 @@ static pthread_t g_motion_thread;
 static int        g_step_fd[MOTION_MOTOR_COUNT];
 static int        g_pwmcap_fd[MOTION_MOTOR_COUNT];
 static clock_t g_last_pos_tick[MOTION_MOTOR_COUNT];   /* khoi tao 0 */
+static float g_pulse_error[MOTION_MOTOR_COUNT];
 
 /****************************************************************************
  * Private Functions
@@ -127,8 +134,9 @@ static void motion_process_motor(int motor_id)
       return;
     }
 
+  // target_deg = 40.0f;
+
   target_deg = motion_pwm_to_deg(pwm.pulse_width_us);
-  // target_deg = 60;
 
   clock_t pos_tick = motor_pos_get_update_tick(motor_id);
 
@@ -145,6 +153,10 @@ static void motion_process_motor(int motor_id)
       return;   /* motor_pos chua co du lieu (-EAGAIN) - bo qua chu ky nay */
     }
 
+  printf("[MOTION] motor=%d target_deg=%.2f pulses=%ld\n",
+         motor_id, (double)target_deg, (long)pulses);
+  fflush(stdout);
+
   if (pulses == 0)
     {
       return;   /* khong can di - driver cung tu no-op voi pulses=0 */
@@ -153,15 +165,91 @@ static void motion_process_motor(int motor_id)
   dir_up     = (pulses > 0);
   abs_pulses = (uint32_t)(dir_up ? pulses : -pulses);
 
+  g_pulse_error[motor_id] = abs_pulses;
+
+  if (abs_pulses < MOTION_DEADBAND_PULSES)
+    {
+      ioctl(g_step_fd[motor_id], STEPIOC_SON_OFF, 0);
+      return;   /* trong deadband, coi nhu da toi vi tri */
+    }
+
   if (!safety_is_motor_allowed(motor_id,
                                 dir_up ? SAFETY_DIR_UP : SAFETY_DIR_DOWN))
     {
       return;
     }
 
-  move.dir_up  = dir_up;
-  move.pulses  = abs_pulses;
-  move.freq_hz = MOTION_STEP_FREQ_HZ;
+  /* TIM3 chi co 1 ARR dung chung cho ca 3 kenh - freq_hz PHAI tinh
+   * theo sai so LON NHAT trong ca 3 truc (rang buoc phan cung), NHUNG
+   * khong duoc vuot qua muc HOP LY rieng cho truc nay (dua theo sai so
+   * CUA CHINH NO) - neu khong, truc da gan dich se bi ep chay nhanh
+   * theo truc khac con xa, gay vot qua setpoint va dao dong.
+   */
+  {
+    uint32_t max_err = g_pulse_error[0];
+    uint32_t shared_freq;
+    uint32_t own_freq;
+    int i;
+
+    for (i = 1; i < MOTION_MOTOR_COUNT; i++)
+      {
+        if (g_pulse_error[i] > max_err)
+          {
+            max_err = g_pulse_error[i];
+          }
+      }
+
+    /* freq theo truc kho nhat - rang buoc phan cung TIM3 dung chung ARR */
+    if (max_err >= MOTION_PULSES_FULL_SPEED)
+      {
+        shared_freq = MOTION_FREQ_MAX_HZ;
+      }
+    else if (max_err <= MOTION_DEADBAND_PULSES)
+      {
+        shared_freq = MOTION_FREQ_MIN_HZ;
+      }
+    else
+      {
+        // shared_freq = MOTION_FREQ_MIN_HZ +
+        //   (uint32_t)((uint64_t)(MOTION_FREQ_MAX_HZ - MOTION_FREQ_MIN_HZ) *
+        //               (max_err - MOTION_DEADBAND_PULSES) /
+        //               (MOTION_PULSES_FULL_SPEED - MOTION_DEADBAND_PULSES));
+        shared_freq = pow((max_err - MOTION_DEADBAND_PULSES), 2) / 20000 + MOTION_FREQ_MIN_HZ;
+      }
+
+    /* freq toi da hop ly rieng cho truc nay, dua theo sai so CUA CHINH NO */
+    if (abs_pulses >= MOTION_PULSES_FULL_SPEED)
+      {
+        own_freq = MOTION_FREQ_MAX_HZ;
+      }
+    else if (abs_pulses <= MOTION_DEADBAND_PULSES)
+      {
+        own_freq = MOTION_FREQ_MIN_HZ;
+      }
+    else
+      {
+        // own_freq = MOTION_FREQ_MIN_HZ +
+        //   (uint32_t)((uint64_t)(MOTION_FREQ_MAX_HZ - MOTION_FREQ_MIN_HZ) *
+        //               (abs_pulses - MOTION_DEADBAND_PULSES) /
+        //               (MOTION_PULSES_FULL_SPEED - MOTION_DEADBAND_PULSES));
+        own_freq = pow((abs_pulses - MOTION_DEADBAND_PULSES), 2) / 10000 + MOTION_FREQ_MIN_HZ;
+      }
+
+    /* Lay gia tri NHO HON - khong bao gio chay nhanh hon muc ban than
+     * truc nay can, du truc khac dang can toc do cao hon.
+     */
+    move.freq_hz = (shared_freq < own_freq) ? shared_freq : own_freq;
+
+    printf("[MOTION] motor=%d pulses=%ld dir_up=%d freq=%lu "
+           "shared_freq=%lu own_freq=%lu max_err=%lu\n",
+           motor_id, (long)pulses, (int)dir_up,
+           (unsigned long)move.freq_hz, (unsigned long)shared_freq,
+           (unsigned long)own_freq, (unsigned long)max_err);
+    fflush(stdout);
+  }
+
+  move.dir_up = dir_up;
+  move.pulses = abs_pulses;
 
   ioctl(g_step_fd[motor_id], STEPIOC_MOVE, (unsigned long)&move);
 }
@@ -207,26 +295,26 @@ static FAR void *motion_task_main(FAR void *arg)
   fflush(stdout);
 
   for (; ; )
-    {
-      /* Cho den khi co du lieu vi tri moi tu modbus_task, timeout 200ms
-       * lam watchdog - neu modbus treo thi khong bi block vinh vien,
-       * quay lai vong lap va de safety_task/logic khac xu ly.
-       */
-      ret = motor_pos_wait_update(200);
+  {
+    int motor_id;
 
-      if (ret != OK)
-        {
-          continue;   /* timeout, chua co du lieu moi */
-        }
+    /* Cho den khi co du lieu vi tri moi tu modbus_task, timeout 200ms
+     * lam watchdog - neu modbus treo thi khong bi block vinh vien,
+     * quay lai vong lap va de safety_task/logic khac xu ly.
+     */
 
-      if (system_state_get() == SYS_STATE_RUNNING)
-        {
-          for (i = 0; i < MOTION_MOTOR_COUNT; i++)
-            {
-              motion_process_motor(i);
-            }
-        }
-    }
+    ret = motor_pos_wait_update_id(200, &motor_id);
+
+    if (ret != OK)
+      {
+        continue;   /* timeout, chua co du lieu moi */
+      }
+
+    if (system_state_get() == SYS_STATE_RUNNING)
+      {
+        motion_process_motor(motor_id);
+      }
+  }
 
   return NULL;
 }

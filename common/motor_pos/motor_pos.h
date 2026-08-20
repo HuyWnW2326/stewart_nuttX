@@ -15,6 +15,8 @@
 #define MOTOR_POS_PULSE               10000     /* pulse per revolution (PPR) */
 #define MOTOR_POS_ENCODER_RESOLUTION  131072     /* 2^17 - count/vong encoder */
 #define MOTOR_POS_ZERO_MARGIN_DEG     15.0f 
+#define MOTOR_POS_MAX_JUMP_PULSE       4000
+#define MOTOR_POS_MAX_CONSEC_REJECT    2 
 
 void motor_pos_init(void);
 
@@ -52,6 +54,8 @@ void motor_pos_update(int motor_id, int32_t encode_value, int32_t turn,
 clock_t motor_pos_get_update_tick(int motor_id);
 
 int motor_pos_wait_update(uint32_t timeout_ms);
+
+int motor_pos_wait_update_id(int timeout_ms, FAR int *motor_id);
 
 /****************************************************************************
  * Name: motor_pos_is_fresh

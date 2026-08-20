@@ -44,8 +44,8 @@
  ****************************************************************************/
 
 #define HOMING_MOTOR_COUNT          MOTOR_COUNT
-#define HOMING_FREQ_HZ              100000UL   /* tan so xung khi homing */
-#define HOMING_LIFT_FREQ_HZ         100000UL   /* tan so xung khi nang len */
+#define HOMING_FREQ_HZ              50000UL   /* tan so xung khi homing */
+#define HOMING_LIFT_FREQ_HZ         50000UL   /* tan so xung khi nang len */
 
 #define HOMING_GEAR_RATIO           100.0f
 #define HOMING_PPR                  10000.0f
@@ -55,7 +55,7 @@
 #define HOMING_ZERO_FRESH_RETRY_COUNT  5
 #define HOMING_ZERO_FRESH_RETRY_US     50000UL
 
-
+#define HOMING_STARTUP_DEBOUNCE_US    20000
 /* Tinh so pulse tu goc (do):
  * pulses = (deg / 360) * GEAR_RATIO * PPR
  * Vi du: 20 do -> (20/360) * 100 * 10000 = 55556 pulse
@@ -94,9 +94,9 @@
 
 static const float g_homing_margin_deg[HOMING_MOTOR_COUNT] =
 {
-  15.0f,   /* motor 0 */
-  15.0f,   /* motor 1 */
-  16.0f,   /* motor 2 */
+  2.0f,   /* motor 0 */
+  2.0f,   /* motor 1 */
+  2.0f,   /* motor 2 */
 };
 
 /* Goc that su can nang len TU LIMIT_DOWN (khong phai tu moc 0 do) de
@@ -390,6 +390,22 @@ static bool wait_motor_pos_fresh_for_zero(int motor_id)
   return false;
 }
 
+
+/* Doc GPIO limit truc tiep nhung xac nhan bang cach doc lai sau vai ms -
+ * chi tin neu ca 2 lan doc dong nhat. Dung rieng cho buoc kiem tra
+ * "da o limit tu truoc khi cap nguon", vi luc do chua co canh nao de
+ * ISR debounce like binh thuong.
+ */
+static bool motorlimit_read_hw_debounced(int motor_id, bool is_up)
+{
+  bool first = motorlimit_read_hw(motor_id, is_up);
+
+  usleep(HOMING_STARTUP_DEBOUNCE_US);   /* vi du 20000 (20ms) */
+
+  return first && motorlimit_read_hw(motor_id, is_up);
+}
+
+
 /****************************************************************************
  * Name: homing_task_main
  *
@@ -415,6 +431,8 @@ int homing_task_main(int argc, char *argv[])
 
   (void)argc;
   (void)argv;
+  
+  motorlimit_flush_events();
 
   for (i = 0; i < HOMING_MOTOR_COUNT; i++)
     {
@@ -447,7 +465,7 @@ int homing_task_main(int argc, char *argv[])
 
   for (i = 0; i < HOMING_MOTOR_COUNT; i++)
     {
-      limit_down = motorlimit_read_hw(i, false);
+      limit_down = motorlimit_read_hw_debounced(i, false);
 
       if (limit_down)
         {

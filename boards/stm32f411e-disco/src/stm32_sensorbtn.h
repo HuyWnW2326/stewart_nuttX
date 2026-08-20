@@ -63,6 +63,7 @@ int  motorlimit_timedwaitevent_id(FAR const struct timespec *abstime,
 /* level meaning: for BTN_STARTSTOP, 0 = START edge, 1 = STOP edge.
  * For BTN_EMERGENCY / BTN_RESTART, always 0 (press event).
  */
+void motorlimit_flush_events(void);
 
 void motorbtn_waitevent(FAR int *btn_id, FAR int *level);
 
