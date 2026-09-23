@@ -44,7 +44,7 @@
  ****************************************************************************/
 
 #define HOMING_MOTOR_COUNT          MOTOR_COUNT
-#define HOMING_FREQ_HZ              50000UL   /* tan so xung khi homing */
+#define HOMING_FREQ_HZ              20000UL   /* tan so xung khi homing */
 #define HOMING_LIFT_FREQ_HZ         50000UL   /* tan so xung khi nang len */
 
 #define HOMING_GEAR_RATIO           100.0f
@@ -96,7 +96,7 @@ static const float g_homing_margin_deg[HOMING_MOTOR_COUNT] =
 {
   2.0f,   /* motor 0 */
   2.0f,   /* motor 1 */
-  2.0f,   /* motor 2 */
+  6.0f,   /* motor 2 */
 };
 
 /* Goc that su can nang len TU LIMIT_DOWN (khong phai tu moc 0 do) de
@@ -165,7 +165,7 @@ static bool send_home(int motor_id)
       return false;
     }
 
-  home.dir_up  = false;           /* xoay xuong tim LIMIT_DOWN */
+  home.dir_up  = false;           /* xoay xuong tim LIMIT_DOWN = false */
   home.freq_hz = HOMING_FREQ_HZ;
 
   if (!safety_is_motor_allowed(motor_id, SAFETY_DIR_DOWN))

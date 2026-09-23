@@ -50,7 +50,7 @@
  * Private Data
  ****************************************************************************/
 
-#define DEBOUNCE_TICKS   MSEC2TICK(10)
+#define DEBOUNCE_TICKS   MSEC2TICK(15)
 
 static struct motor_limit_state_s g_limit[MOTOR_COUNT];
 static sem_t    g_limit_event_sem;

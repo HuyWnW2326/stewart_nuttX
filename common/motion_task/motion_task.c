@@ -53,7 +53,7 @@
 
 #define MOTION_FREQ_MIN_HZ         1000UL
 #define MOTION_FREQ_MAX_HZ         50000UL
-#define MOTION_PULSES_FULL_SPEED   32000UL 
+#define MOTION_PULSES_FULL_SPEED   23500UL 
 
 #define MOTION_TASK_PRIORITY     150   /* duoi safety_task, tren modbus_task */
 #define MOTION_DEBUG_MOTOR_ID    1
@@ -214,7 +214,7 @@ static void motion_process_motor(int motor_id)
         //   (uint32_t)((uint64_t)(MOTION_FREQ_MAX_HZ - MOTION_FREQ_MIN_HZ) *
         //               (max_err - MOTION_DEADBAND_PULSES) /
         //               (MOTION_PULSES_FULL_SPEED - MOTION_DEADBAND_PULSES));
-        shared_freq = pow((max_err - MOTION_DEADBAND_PULSES), 2) / 20000 + MOTION_FREQ_MIN_HZ;
+        shared_freq = pow((max_err - MOTION_DEADBAND_PULSES), 2) / 10000 + MOTION_FREQ_MIN_HZ;
       }
 
     /* freq toi da hop ly rieng cho truc nay, dua theo sai so CUA CHINH NO */

@@ -187,9 +187,9 @@ void motor_pos_update(int motor_id, int32_t encode_value, int32_t turn,
       return;
     }
 
-  printf("[MOTOR_POS] motor=%d encode_value=%ld turn=%ld rev=%ld\n",
-         motor_id, (long)encode_value, (long)turn, (long)rev);
-  fflush(stdout);
+  // printf("[MOTOR_POS] motor=%d encode_value=%ld turn=%ld rev=%ld\n",
+  //        motor_id, (long)encode_value, (long)turn, (long)rev);
+  // fflush(stdout);
 
   pthread_mutex_lock(&g_lock);
 
